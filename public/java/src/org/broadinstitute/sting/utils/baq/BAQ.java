@@ -52,13 +52,6 @@ public class BAQ {
         DONT_MODIFY                 // do the BAQ, but don't modify the quality scores themselves, just return them in the function.
     }
 
-    public enum ApplicationTime {
-        FORBIDDEN,                  // Walker does not tolerate BAQ input
-        ON_INPUT,                   // apply the BAQ calculation to the incoming reads, the default
-        ON_OUTPUT,                  // apply the BAQ calculation to outgoing read streams
-        HANDLED_IN_WALKER           // the walker will deal with the BAQ calculation status itself
-    }
-
     public static final String BAQ_TAG = "BQ";
 
     private static double[] qual2prob = new double[256];
@@ -68,7 +61,7 @@ public class BAQ {
     }
 
     // Phred scaled now (changed 1/10/2011)
-    public static double DEFAULT_GOP = 40;
+    public static final double DEFAULT_GOP = 40;
 
     /*  Takes a Phred Scale quality score and returns the error probability.
      *
@@ -110,9 +103,18 @@ public class BAQ {
      * Use defaults for everything
      */
     public BAQ() {
-        cd = convertFromPhredScale(DEFAULT_GOP);
+        this(DEFAULT_GOP);
+    }
+
+    /**
+     * Use defaults for everything
+     */
+    public BAQ(final double gapOpenPenalty) {
+        cd = convertFromPhredScale(gapOpenPenalty);
         initializeCachedData();
     }
+
+
 
     /**
      * Create a new HmmGlocal object with specified parameters
@@ -404,10 +406,15 @@ public class BAQ {
         // so BQi = Qi - BAQi + 64
         byte[] bqTag = new byte[baq.length];
         for ( int i = 0; i < bqTag.length; i++) {
-            int bq = (int)read.getBaseQualities()[i] + 64;
-            int baq_i = (int)baq[i];
-            int tag = bq - baq_i;
-            if ( tag < 0 ) throw new ReviewedStingException("BAQ tag calculation error.  BAQ value above base quality at " + read);
+            final int bq = (int)read.getBaseQualities()[i] + 64;
+            final int baq_i = (int)baq[i];
+            final int tag = bq - baq_i;
+            // problem with the calculation of the correction factor; this is our problem
+            if ( tag < 0 )
+                throw new ReviewedStingException("BAQ tag calculation error.  BAQ value above base quality at " + read);
+            // the original quality is too high, almost certainly due to using the wrong encoding in the BAM file
+            if ( tag > Byte.MAX_VALUE )
+                throw new UserException.MisencodedBAM(read, "we encountered an extremely high quality score (" + (int)read.getBaseQualities()[i] + ") with BAQ correction factor of " + baq_i);
             bqTag[i] = (byte)tag;
         }
         return new String(bqTag);
@@ -551,7 +558,7 @@ public class BAQ {
             switch (elt.getOperator()) {
                 case N:  return null; // cannot handle these
                 case H : case P : case D: break; // ignore pads, hard clips, and deletions
-                case I : case S: case M:
+                case I : case S: case M: case EQ: case X:
                     int prev = readI;
                     readI += elt.getLength();
                     if ( includeClippedBases || elt.getOperator() != CigarOperator.S) {

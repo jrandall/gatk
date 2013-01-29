@@ -24,41 +24,40 @@
 
 package org.broadinstitute.sting.gatk.datasources.reads;
 
-import static org.testng.Assert.fail;
 import net.sf.picard.reference.IndexedFastaSequenceFile;
-import net.sf.samtools.SAMFileReader;
-import net.sf.samtools.SAMRecord;
+import net.sf.samtools.*;
 import org.broadinstitute.sting.BaseTest;
 import org.broadinstitute.sting.commandline.Tags;
 import org.broadinstitute.sting.gatk.arguments.ValidationExclusion;
 import org.broadinstitute.sting.gatk.filters.ReadFilter;
+import org.broadinstitute.sting.gatk.iterators.ReadTransformer;
 import org.broadinstitute.sting.gatk.iterators.StingSAMIterator;
 import org.broadinstitute.sting.gatk.resourcemanagement.ThreadAllocation;
-import org.broadinstitute.sting.utils.GenomeLocParser;
 import org.broadinstitute.sting.utils.GenomeLoc;
-import org.broadinstitute.sting.utils.fasta.CachingIndexedFastaSequenceFile;
+import org.broadinstitute.sting.utils.GenomeLocParser;
 import org.broadinstitute.sting.utils.exceptions.UserException;
+import org.broadinstitute.sting.utils.fasta.CachingIndexedFastaSequenceFile;
 import org.testng.annotations.AfterMethod;
 import org.testng.annotations.BeforeMethod;
-
 import org.testng.annotations.Test;
 
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.util.ArrayList;
-import java.util.Iterator;
+import java.util.Collections;
 import java.util.List;
 
+import static org.testng.Assert.*;
+
 /**
- * @author aaron
- * @version 1.0
- * @date Apr 8, 2009
  * <p/>
  * Class SAMDataSourceUnitTest
  * <p/>
  * The test of the SAMBAM simple data source.
  */
 public class SAMDataSourceUnitTest extends BaseTest {
+
+    // TODO: These legacy tests should really be replaced with a more comprehensive suite of tests for SAMDataSource
 
     private List<SAMReaderID> readers;
     private IndexedFastaSequenceFile seq;
@@ -142,5 +141,68 @@ public class SAMDataSourceUnitTest extends BaseTest {
             e.printStackTrace();  //To change body of catch statement use File | Settings | File Templates.
             fail("testLinearBreakIterateAll: We Should get a UserException.CouldNotReadInputFile exception");
         }
+    }
+
+    /** Test that we clear program records when requested */
+    @Test
+    public void testRemoveProgramRecords() {
+        logger.warn("Executing testRemoveProgramRecords");
+
+        // setup the data
+        readers.add(new SAMReaderID(new File(b37GoodBAM),new Tags()));
+
+        // use defaults
+        SAMDataSource data = new SAMDataSource(readers,
+                new ThreadAllocation(),
+                null,
+                genomeLocParser,
+                false,
+                SAMFileReader.ValidationStringency.SILENT,
+                null,
+                null,
+                new ValidationExclusion(),
+                new ArrayList<ReadFilter>(),
+                false);
+
+        List<SAMProgramRecord> defaultProgramRecords = data.getHeader().getProgramRecords();
+        assertTrue(defaultProgramRecords.size() != 0, "testRemoveProgramRecords: No program records found when using default constructor");
+
+        boolean removeProgramRecords = false;
+        data = new SAMDataSource(readers,
+                new ThreadAllocation(),
+                null,
+                genomeLocParser,
+                false,
+                SAMFileReader.ValidationStringency.SILENT,
+                null,
+                null,
+                new ValidationExclusion(),
+                new ArrayList<ReadFilter>(),
+                Collections.<ReadTransformer>emptyList(),
+                false,
+                (byte) -1,
+                removeProgramRecords);
+
+        List<SAMProgramRecord> dontRemoveProgramRecords = data.getHeader().getProgramRecords();
+        assertEquals(dontRemoveProgramRecords, defaultProgramRecords, "testRemoveProgramRecords: default program records differ from removeProgramRecords = false");
+
+        removeProgramRecords = true;
+        data = new SAMDataSource(readers,
+                new ThreadAllocation(),
+                null,
+                genomeLocParser,
+                false,
+                SAMFileReader.ValidationStringency.SILENT,
+                null,
+                null,
+                new ValidationExclusion(),
+                new ArrayList<ReadFilter>(),
+                Collections.<ReadTransformer>emptyList(),
+                false,
+                (byte) -1,
+                removeProgramRecords);
+
+        List<SAMProgramRecord> doRemoveProgramRecords = data.getHeader().getProgramRecords();
+        assertTrue(doRemoveProgramRecords.isEmpty(), "testRemoveProgramRecords: program records not cleared when removeProgramRecords = true");
     }
 }

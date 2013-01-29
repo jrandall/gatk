@@ -82,7 +82,7 @@ import java.util.*;
 @Allows(value={DataSource.READS, DataSource.REFERENCE})
 @Reference(window=@Window(start=-50,stop=50))
 @By(DataSource.REFERENCE)
-public class VariantAnnotator extends RodWalker<Integer, Integer> implements AnnotatorCompatible {
+public class VariantAnnotator extends RodWalker<Integer, Integer> implements AnnotatorCompatible, TreeReducible<Integer> {
 
     @ArgumentCollection
     protected StandardVariantContextInputArgumentCollection variantCollection = new StandardVariantContextInputArgumentCollection();
@@ -161,6 +161,9 @@ public class VariantAnnotator extends RodWalker<Integer, Integer> implements Ann
     @Argument(fullName="useAllAnnotations", shortName="all", doc="Use all possible annotations (not for the faint of heart)", required=false)
     protected Boolean USE_ALL_ANNOTATIONS = false;
 
+    /**
+     * Note that the --list argument requires a fully resolved and correct command-line to work.
+     */
     @Argument(fullName="list", shortName="ls", doc="List the available annotations and exit")
     protected Boolean LIST = false;
 
@@ -273,14 +276,6 @@ public class VariantAnnotator extends RodWalker<Integer, Integer> implements Ann
     }
 
     /**
-     * Initialize the number of loci processed to zero.
-     *
-     * @return 0
-     */
-    public Integer reduceInit() { return 0; }
-
-
-    /**
      * We want reads that span deletions
      *
      * @return true
@@ -320,15 +315,15 @@ public class VariantAnnotator extends RodWalker<Integer, Integer> implements Ann
         return 1;
     }
 
-    /**
-     * Increment the number of loci processed.
-     *
-     * @param value result of the map.
-     * @param sum   accumulator for the reduce.
-     * @return the new number of loci processed.
-     */
-    public Integer reduce(Integer value, Integer sum) {
-        return sum + value;
+    @Override
+    public Integer reduceInit() { return 0; }
+
+    @Override
+    public Integer reduce(Integer value, Integer sum) { return value + sum; }
+
+    @Override
+    public Integer treeReduce(Integer lhs, Integer rhs) {
+        return lhs + rhs;
     }
 
     /**

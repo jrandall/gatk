@@ -22,7 +22,9 @@
   ~ OTHER DEALINGS IN THE SOFTWARE.
   -->
 
-<project name="Sting" default="dist" basedir="." xmlns:ivy="antlib:org.apache.ivy.ant">
+<project name="Sting" default="dist" basedir="."
+         xmlns:artifact="antlib:org.apache.maven.artifact.ant"
+         xmlns:ivy="antlib:org.apache.ivy.ant">
     <description>Compile and distribute the Sting toolkit</description>
 
     <!-- ******************************************************************************** -->
@@ -76,7 +78,8 @@
     <property name="staging.dir" value="staging" />
     <property name="default.executable" value="none" />
 
-    <!-- Javadoc/Scaladoc directories -->
+    <!-- GATKDocs/Javadoc/Scaladoc directories -->
+    <property name="gatkdocs.dir" value="gatkdocs" />
     <property name="javadoc.dir" value="javadoc" />
     <property name="scaladoc.dir" value="scaladoc" />
 
@@ -92,11 +95,9 @@
     <!-- To disable for test targets, run with -Duse.contracts=false -->
     <!-- To enable for non-test targets, run with -Duse.contracts=true -->
     <property name="java.contracts.dir" value="${build.dir}/java/contracts" />
-    <property name="contracts.version" value="1.0-20110609" />
+    <property name="contracts.version" value="1.0-r139" />
     <property name="cofoja.jar" value="${lib.dir}/cofoja-${contracts.version}.jar"/>
     <property name="contract.dump.dir" value="dump" />
-
-    <property name="gatkdocs.dir" value="gatkdocs" />
 
     <!-- do we want to halt on failure of a unit test? default to yes (Bamboo uses 'no') -->
     <property name="halt" value="yes" />
@@ -184,10 +185,7 @@
         <include name="**/*.class"/>
     </fileset>
 
-    <patternset id="dependency.mask" includes="*.jar">
-        <exclude name="testng*.jar" />
-        <exclude name="bcel*.jar" />
-    </patternset>
+    <patternset id="dependency.mask" includes="*.jar" />
 
     <path id="external.dependencies">
         <fileset dir="${lib.dir}" erroronmissingdir="false">
@@ -204,40 +202,50 @@
         <pathelement location="${scala.classes}" />
     </path>
 
+    <path id="build.results">
+        <!-- Ensure that GenomeAnalysisTK.jar comes first in the path, as it contains overrides for certain classes in our dependencies -->
+        <pathelement location="${dist.dir}/GenomeAnalysisTK.jar" />
+        <!-- After GenomeAnalysisTK.jar we include all of the other jars in the dist directory -->
+        <fileset dir="${dist.dir}" erroronmissingdir="false">
+            <patternset refid="dependency.mask" />
+            <exclude name="GenomeAnalysisTK.jar" />
+        </fileset>
+    </path>
+
     <fileset id="external.source.files" dir="${external.dir}" erroronmissingdir="false">
         <include name="**/*.java" />
     </fileset>
 
-    <pathconvert property="external.build.dir">
-        <path path="${java.classes}"/>
-    </pathconvert>
+    <path id="external.build.dir">
+        <path path="${java.classes}" />
+    </path>
 
-    <pathconvert property="external.dist.dir">
+    <path id="external.dist.dir">
         <path path="${dist.dir}" />
-    </pathconvert>
+    </path>
 
     <!-- GATK dependencies consist of 3rd party plugins plus compiled GATK classes -->
-    <pathconvert property="external.gatk.classpath">
+    <path id="external.gatk.classpath">
         <path path="${java.classes}"/>
         <path refid="external.dependencies" />
-    </pathconvert>
+    </path>
 
     <!-- the path for resources that need to go into the GATK jar;
          any additional resources should go into this set. -->
     <path id="gatk.resources">
-        <fileset dir="${basedir}">
-            <include name="${java.public.source.dir}/**/templates/*" />
-            <include name="${java.private.source.dir}/**/templates/*" if="include.private" />
-            <include name="${java.protected.source.dir}/**/templates/*" if="include.protected" />
+        <fileset dir="${java.public.source.dir}">
+            <include name="**/resources/*" />
+            <include name="**/templates/*" />
+        </fileset>
+        <fileset dir="${java.private.source.dir}" erroronmissingdir="false">
+            <include name="**/resources/*" if="include.private" />
+            <include name="**/templates/*" if="include.private" />
+        </fileset>
+        <fileset dir="${java.protected.source.dir}" erroronmissingdir="false">
+            <include name="**/resources/*" if="include.protected" />
+            <include name="**/templates/*" if="include.protected" />
         </fileset>
     </path>
-
-    <path id="build.results">
-        <fileset dir="${dist.dir}">
-            <patternset refid="dependency.mask" />
-         </fileset>
-    </path>
-
 
     <!-- ******************************************************************************** -->
     <!-- Ivy Retrieve                                                                     -->
@@ -251,17 +259,29 @@
         <property name="ivy.jar.file" value="ivy-${ivy.install.version}.jar"/>
         <property name="ivy.settings.dir" value="settings"/>
         <property file="${ivy.settings.dir}/ivysettings.properties"/>
+        <property name="maven-ant-tasks.install.version" value="2.1.3"/>
+        <property name="maven-ant-tasks.jar.file" value="maven-ant-tasks-${maven-ant-tasks.install.version}.jar"/>
 
         <mkdir dir="${lib.dir}"/>
         <mkdir dir="${ivy.jar.dir}"/>
 
-        <!-- Comment out the following two lines to build the GATK without a network connection, assuming you have all of the libraries cached already -->
+        <!-- Comment out the following lines to build the GATK without a network connection, assuming you have all of the libraries cached already -->
+
         <get src="http://repo1.maven.org/maven2/org/apache/ivy/ivy/${ivy.install.version}/${ivy.jar.file}"
              dest="${ivy.jar.dir}/${ivy.jar.file}"
              usetimestamp="true"/>
         <taskdef resource="org/apache/ivy/ant/antlib.xml"
                  uri="antlib:org.apache.ivy.ant"
                  classpath="${ivy.jar.dir}/${ivy.jar.file}"/>
+
+        <get src="http://repo1.maven.org/maven2/org/apache/maven/maven-ant-tasks/${maven-ant-tasks.install.version}/${maven-ant-tasks.jar.file}"
+             dest="${ivy.jar.dir}/${maven-ant-tasks.jar.file}"
+             usetimestamp="true"/>
+        <taskdef resource="org/apache/maven/artifact/ant/antlib.xml"
+                 uri="antlib:antlib:org.apache.maven.artifact.ant"
+                 classpath="${ivy.jar.dir}/${maven-ant-tasks.jar.file}"/>
+
+        <!-- End network lines -->
 
         <ivy:settings file="${ivy.settings.dir}/ivysettings.xml"/>
         <property name="init.resolve.done" value="true"/>
@@ -296,7 +316,7 @@
 
     <target name="git.rev-parse" depends="git.describe" unless="git.describe.succeeded">
       <exec executable="git" outputproperty="git.rev-parse.output" resultproperty="git.rev-parse.exit.value" failonerror="false">
-        <arg line="rev-parse HEAD" />
+        <arg line="rev-parse --short HEAD" />
       </exec>
       <condition property="git.rev-parse.succeeded">
         <equals arg1="${git.rev-parse.exit.value}" arg2="0" />
@@ -314,12 +334,16 @@
 
 
     <!-- INIT OVERRIDES: call these targets BEFORE init to override build defaults -->
-    <target name="init.publiconly">
+    <target name="init.build.publiconly">
         <property name="build.target" value="public" />
     </target>
 
-    <target name="init.publicprotectedonly">
+    <target name="init.build.publicprotectedonly">
         <property name="build.target" value="protected" />
+    </target>
+
+    <target name="init.build.all">
+        <property name="build.target" value="all" />
     </target>
 
     <target name="init.javaonly">
@@ -430,9 +454,9 @@
 
     <target name="gatk.compile.external.source" depends="gatk.compile.internal.source" if="include.external">
         <subant target="compile" genericantfile="build.xml">
-            <property name="build.dir" value="${external.build.dir}" />
-            <property name="dist.dir" value="${external.dist.dir}" />
-            <property name="gatk.classpath" value="${external.gatk.classpath}" />
+            <property name="build.dir" refid="external.build.dir" />
+            <property name="dist.dir" refid="external.dist.dir" />
+            <property name="gatk.classpath" refid="external.gatk.classpath" />
             <fileset dir="${external.dir}" includes="*/build.xml" erroronmissingdir="false" />
         </subant>
     </target>
@@ -578,6 +602,7 @@
                  docletpathref="doclet.classpath"
                  classpathref="external.dependencies"
                  classpath="${java.classes}"
+		 maxmemory="2g"
                  additionalparam="-build-timestamp &quot;${build.timestamp}&quot; -absolute-version ${build.version} -out ${basedir}/${resource.path} -quiet">
             <sourcefiles>
                 <union>
@@ -654,6 +679,24 @@
         </jar>
     </target>
 
+    <target name="na12878kb.jar" depends="gatk.compile,init.jar">
+        <jar jarfile="${dist.dir}/na12878kb.jar">
+            <fileset dir="${java.classes}">
+              <include name="org/broadinstitute/sting/utils/GenomeLocParser*.class"/>
+              <include name="org/broadinstitute/sting/utils/GenomeLoc.class"/>
+              <include name="org/broadinstitute/sting/utils/HasGenomeLocation.class"/>
+              <include name="org/broadinstitute/sting/utils/BaseUtils.class"/>
+              <include name="org/broadinstitute/sting/utils/Utils.class"/>
+              <include name="org/broadinstitute/sting/utils/exceptions/**/*.class"/>
+              <include name="org/broadinstitute/sting/gatk/walkers/na12878kb/core/**/*.class"/>
+              <include name="net/sf/picard/reference/FastaSequenceFile.class"/>
+            </fileset>
+	    <fileset dir="${java.private.source.dir}">
+              <include name="org/broadinstitute/sting/gatk/walkers/na12878kb/core/resources/**/*"/>
+	    </fileset>
+        </jar>
+    </target>
+
     <target name="gatk.jar" depends="gatk.compile, init.jar, R.script.stage" description="generate the GATK distribution">
         <jar jarfile="${dist.dir}/GenomeAnalysisTK.jar">
             <path refid="gatk.resources"/>
@@ -680,9 +723,9 @@
         </jar>
 
         <subant target="dist" genericantfile="build.xml">
-            <property name="build.dir" value="${external.build.dir}" />
-            <property name="dist.dir" value="${external.dist.dir}" />
-            <property name="gatk.classpath" value="${external.gatk.classpath}" />
+            <property name="build.dir" refid="external.build.dir" />
+            <property name="dist.dir" refid="external.dist.dir" />
+            <property name="gatk.classpath" refid="external.gatk.classpath" />
             <fileset dir="${external.dir}" includes="*/build.xml" erroronmissingdir="false" />
         </subant>
     </target>
@@ -781,6 +824,7 @@
                  docletpathref="doclet.classpath"
                  classpathref="external.dependencies"
                  classpath="${java.classes}"
+		 maxmemory="2g"
                  additionalparam="${gatkdocs.include.hidden.arg} -private -build-timestamp &quot;${build.timestamp}&quot; -absolute-version ${build.version} -quiet"> <!-- -test to only do DocumentationTest walker -->
             <sourcefiles>
                 <fileset refid="java.source.files"/>
@@ -827,19 +871,23 @@
     <!-- Release-related tasks                                                            -->
     <!-- ******************************************************************************** -->
 
-    <target name="init.buildgatkfull" depends="init.publicprotectedonly, init.javaonly">
+    <target name="init.executable.gatkfull" depends="init.build.publicprotectedonly, init.javaonly">
         <property name="executable" value="GenomeAnalysisTK" />
     </target>
 
-    <target name="init.buildgatklite" depends="init.publiconly, init.javaonly">
+    <target name="init.executable.gatklite" depends="init.build.publiconly, init.javaonly">
         <property name="executable" value="GenomeAnalysisTKLite" />
     </target>
 
-    <target name="init.buildqueuefull" depends="init.publicprotectedonly, init.javaandscala">
+    <target name="init.executable.queueall" depends="init.build.all, init.javaandscala">
         <property name="executable" value="Queue" />
     </target>
 
-    <target name="init.buildqueuelite" depends="init.publiconly, init.javaandscala">
+    <target name="init.executable.queuefull" depends="init.build.publicprotectedonly, init.javaandscala">
+        <property name="executable" value="Queue" />
+    </target>
+
+    <target name="init.executable.queuelite" depends="init.build.publiconly, init.javaandscala">
         <property name="executable" value="QueueLite" />
     </target>
 
@@ -876,7 +924,7 @@
 
 
     <!-- Build a package consisting of all supporting files. Don't call this target directly. Call one of the specific packaging targets below -->
-    <target name="package" depends="dist,stage,require.executable" description="bundle up an executable for distribution">
+    <target name="package" depends="require.clean,dist,stage,require.executable" description="bundle up an executable for distribution">
       <mkdir dir="${package.output.dir}" />
       <xslt destdir="${package.output.dir}" style="${package.xml.dir}/CreatePackager.xsl" useImplicitFileset="false">
           <flattenmapper/>
@@ -891,13 +939,15 @@
     </target>
 
     <!-- Package specific versions of the GATK/Queue. ALWAYS do an ant clean before invoking these! -->
-    <target name="package.gatk.full" depends="init.buildgatkfull,package" />
+    <target name="package.gatk.full" depends="init.executable.gatkfull,package" />
 
-    <target name="package.gatk.lite" depends="init.buildgatklite,package" />
+    <target name="package.gatk.lite" depends="init.executable.gatklite,package" />
 
-    <target name="package.queue.full" depends="init.buildqueuefull,package" />
+    <target name="package.queue.all" depends="init.executable.queueall,package" />
 
-    <target name="package.queue.lite" depends="init.buildqueuelite,package" />
+    <target name="package.queue.full" depends="init.executable.queuefull,package" />
+
+    <target name="package.queue.lite" depends="init.executable.queuelite,package" />
 
 
     <!-- Release a build. Don't call this target directly. Call one of the specific release targets below -->
@@ -941,6 +991,30 @@
       </ant>
     </target>
 
+    <!-- Maven install a package consisting of all supporting files. Don't call this target directly. Call one of the specific packaging targets below -->
+    <target name="mvninstall" depends="package" description="maven install a package into .m2/repository">
+        <property name="mvn.build.version" value="0.0.1" />
+        <!--
+        We should use the build version or better yet a git tag version, but tags are currently missing. Alternatively how do we then depend on the LATEST?
+        <property name="mvn.build.version" value="${build.version}" />
+        -->
+        <artifact:pom id="${executable}.pom" groupId="org.broadinstitute.sting" artifactId="${executable}" version="${mvn.build.version}" name="${executable}" />
+        <artifact:writepom pomRefId="${executable}.pom" file="${package.output.dir}/${executable}-${build.version}/${executable}.pom.xml"/>
+        <artifact:install file="${package.output.dir}/${executable}-${build.version}/${executable}.jar">
+            <artifact:pom file="${package.output.dir}/${executable}-${build.version}/${executable}.pom.xml" />
+        </artifact:install>
+    </target>
+
+    <!-- Maven install specific versions of the GATK/Queue. ALWAYS do an ant clean before invoking these! -->
+    <target name="mvninstall.gatk.full" depends="package.gatk.full,mvninstall" />
+
+    <target name="mvninstall.gatk.lite" depends="package.gatk.lite,mvninstall" />
+
+    <target name="mvninstall.queue.all" depends="package.queue.all,mvninstall" />
+
+    <target name="mvninstall.queue.full" depends="package.queue.full,mvninstall" />
+
+    <target name="mvninstall.queue.lite" depends="package.queue.lite,mvninstall" />
 
     <!-- ******************************************************************************** -->
     <!-- Clean                                                                            -->
@@ -972,6 +1046,24 @@
         <delete dir="${staging.dir}"/>
         <delete dir="${dist.dir}"/>
         <delete dir="${pipelinetest.dir}"/>
+    </target>
+
+    <!-- Depend on this target if your target requires a clean working directory but you don't want to depend on clean directly -->
+    <target name="require.clean">
+        <condition property="not.clean">
+            <or>
+                <available file="${build.dir}" />
+                <available file="${lib.dir}" />
+                <available file="${contract.dump.dir}" />
+                <available file="${staging.dir}" />
+                <available file="${dist.dir}" />
+                <available file="${pipelinetest.dir}" />
+                <available file="${javadoc.dir}" />
+                <available file="${scaladoc.dir}" />
+                <available file="${gatkdocs.dir}" />
+            </or>
+        </condition>
+        <fail message="Selected build target requires a clean working directory. Run ant clean and then try again." if="not.clean" />
     </target>
 
 
@@ -1036,15 +1128,10 @@
     </path>
 
     <path id="testng.default.classpath">
-        <pathelement location="${java.classes}" />
-        <pathelement location="${scala.classes}" />
+        <path refid="build.results" />
         <pathelement location="${java.contracts.dir}" />
         <pathelement location="${java.test.classes}" />
         <pathelement location="${scala.test.classes}" />
-        <pathelement location="${R.tar.dir}" />
-        <path refid="R.script.source.path" />
-        <pathelement location="${key.dir}" />
-        <path refid="external.dependencies" />
     </path>
 
     <!-- Test targets -->
@@ -1052,9 +1139,6 @@
     <target name="test.init.compile">
         <mkdir dir="${java.test.classes}"/>
         <mkdir dir="${scala.test.classes}"/>
-        <antcall target="resolve">
-          <param name="ivy.conf" value="test"/>
-        </antcall>
     </target>
 
    <target name="test.java.internal.compile" depends="dist,test.init.compile">
@@ -1062,10 +1146,8 @@
         <javac fork="true" memoryMaximumSize="512m" destdir="${java.test.classes}" debug="true" optimize="on" tempdir="${java.io.tmpdir}">
             <src refid="java.test.source.path" />
             <classpath>
-                <path refid="external.dependencies" />
-                <pathelement location="${java.classes}"/>
+                <path refid="build.results" />
                 <pathelement location="${java.contracts.dir}"/>
-                <pathelement location="${testng.jar}"/>
             </classpath>
             <compilerarg value="-proc:none"/>
         </javac>
@@ -1076,11 +1158,9 @@
         <javac fork="true" memoryMaximumSize="512m" destdir="${java.test.classes}" debug="true" optimize="on" tempdir="${java.io.tmpdir}" srcdir="${external.dir}">
             <include name="*/test/**/*.java"/>
             <classpath>
-                <path refid="external.dependencies" />
+                <path refid="build.results" />
                 <pathelement location="${java.test.classes}"/>
-                <pathelement location="${java.classes}"/>
                 <pathelement location="${java.contracts.dir}"/>
-                <pathelement location="${testng.jar}"/>
             </classpath>
             <compilerarg value="-proc:none"/>
         </javac>
@@ -1093,9 +1173,8 @@
         <scalac fork="true" jvmargs="-Xmx512m" destdir="${scala.test.classes}" deprecation="yes" unchecked="yes">
 	        <src refid="scala.test.source.path" />
             <classpath>
-                <path refid="scala.dependencies"/>
+                <path refid="build.results"/>
                 <pathelement location="${java.test.classes}"/>
-                <pathelement location="${testng.jar}"/>
             </classpath>
         </scalac>
     </target>
@@ -1137,14 +1216,16 @@
             <echo message="" />
             <echo message="Sting: Running @{testtype} test cases!"/>
 
+	    <!-- no test is allowed to run for more than 10 hours -->
             <taskdef resource="testngtasks" classpath="${testng.jar}"/>
             <testng outputDir="@{outputdir}"
                     classpathref="${testng.classpath}"
                     haltOnFailure="false" failureProperty="test.failure"
                     verbose="2"
+		            timeout="36000000"
                     workingDir="${basedir}"
                     useDefaultListeners="false"
-                    listeners="org.testng.reporters.FailedReporter,org.testng.reporters.JUnitXMLReporter,org.broadinstitute.sting.StingTextReporter,org.uncommons.reportng.HTMLReporter">
+                    listeners="org.testng.reporters.FailedReporter,org.testng.reporters.JUnitXMLReporter,org.broadinstitute.sting.TestNGTestTransformer,org.broadinstitute.sting.StingTextReporter,org.uncommons.reportng.HTMLReporter">
                 <jvmarg value="-Xmx${test.maxmemory}" />
                 <jvmarg value="-ea" />
                 <jvmarg value="-Djava.awt.headless=true" />
@@ -1178,7 +1259,7 @@
 
 	    <!-- copy the report to our private_html directory for easy viewing in a broswer -->
             <mkdir dir="${iwww.report.dir}/@{testtype}"/>
-            <copy todir="${iwww.report.dir}/@{testtype}" verbose="true">
+            <copy todir="${iwww.report.dir}/@{testtype}" verbose="false">
               <fileset dir="@{outputdir}"/>
             </copy>
 
@@ -1300,14 +1381,13 @@
 
     <!-- Fast test target that cuts major corners for speed. Requires that a full build has been done first. Java-only, single test class only -->
     <!-- Usage: ant fasttest -Dsingle=TestClass -->
-    <target name="fasttest" depends="init.javaonly,init,test.init">
+    <target name="fasttest" depends="init.javaonly,init">
         <condition property="not.clean">
             <and>
                 <available file="${build.dir}" />
                 <available file="${lib.dir}" />
                 <available file="${dist.dir}" />
                 <available file="${java.test.classes}" />
-                <available file="${testng.jar}" />
             </and>
         </condition>
         <fail message="fasttest requires a NON-CLEAN working directory (INCLUDING test classes). Do a full test build using ant test.compile first." unless="not.clean" />
@@ -1325,12 +1405,26 @@
         <javac fork="true" memoryMaximumSize="512m" destdir="${java.test.classes}" debug="true" optimize="on" tempdir="${java.io.tmpdir}">
             <src refid="java.test.source.path" />
             <classpath>
-                <path refid="external.dependencies" />
                 <pathelement location="${java.classes}"/>
-                <pathelement location="${testng.jar}"/>
+                <path refid="external.dependencies" />
             </classpath>
             <compilerarg value="-proc:none"/>
         </javac>
+
+        <!-- fasttest uses the unpackaged class files in its test classpath to avoid having to rebuild the jars in dist/ -->
+        <path id="testng.fasttest.classpath">
+            <pathelement location="${java.classes}" />
+            <pathelement location="${scala.classes}" />
+            <pathelement location="${java.contracts.dir}" />
+            <pathelement location="${java.test.classes}" />
+            <pathelement location="${scala.test.classes}" />
+            <pathelement location="${R.tar.dir}" />
+            <path refid="R.script.source.path" />
+            <pathelement location="${key.dir}" />
+            <path refid="external.dependencies" />
+            <path refid="java.source.path" />  <!-- Terrible hack to allow fasttest to see resource files stored in the source tree -->
+        </path>
+        <property name="testng.classpath" value="testng.fasttest.classpath" />
 
         <run-test testtype="${single}" outputdir="${report}/${single}" runfailed="false"/>
     </target>

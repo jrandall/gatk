@@ -27,7 +27,8 @@ package org.broadinstitute.sting.queue
 import engine.JobRunInfo
 import org.broadinstitute.sting.queue.function.QFunction
 import annotation.target.field
-import util.{StringFileConversions, PrimitiveOptionConversions, Logging}
+import util._
+import org.broadinstitute.sting.commandline.ArgumentSource
 
 /**
  * Defines a Queue pipeline as a collection of CommandLineFunctions.
@@ -106,6 +107,64 @@ trait QScript extends Logging with PrimitiveOptionConversions with StringFileCon
   def addAll(functions: Seq[QFunction]) {
     functions.foreach( f => add(f) )
   }
+
+  /**
+   * Convert all @Output files to remote output files.
+   * @param remoteFileConverter Converter for files to remote files.
+   */
+  def mkRemoteOutputs(remoteFileConverter: RemoteFileConverter) {
+    for (field <- outputFields) {
+      val fieldFile = ClassFieldCache.getFieldFile(this, field)
+      if (fieldFile != null && !fieldFile.isInstanceOf[RemoteFile]) {
+        val fieldName = ClassFieldCache.fullName(field)
+        val remoteFile = remoteFileConverter.convertToRemote(fieldFile, fieldName)
+        ClassFieldCache.setFieldValue(this, field, remoteFile)
+      }
+    }
+  }
+
+  /**
+   * Pull all remote files to the local disk
+   */
+  def pullInputs() {
+    val inputs = ClassFieldCache.getFieldFiles(this, inputFields)
+    for (remoteFile <- filterRemoteFiles(inputs)) {
+      logger.info("Pulling %s from %s".format(remoteFile.getAbsolutePath, remoteFile.remoteDescription))
+      remoteFile.pullToLocal()
+    }
+  }
+
+  /**
+   * Push all remote files from the local disk
+   */
+  def pushOutputs() {
+    val outputs = ClassFieldCache.getFieldFiles(this, outputFields)
+    for (remoteFile <- filterRemoteFiles(outputs)) {
+      logger.info("Pushing %s to %s".format(remoteFile.getAbsolutePath, remoteFile.remoteDescription))
+      remoteFile.pushToRemote()
+    }
+  }
+
+  private def filterRemoteFiles(fields: Seq[File]): Seq[RemoteFile] =
+    fields.filter(field => field != null && field.isInstanceOf[RemoteFile]).map(_.asInstanceOf[RemoteFile])
+  /**
+   * @return the inputs or null if there are no inputs
+   */
+  def remoteInputs: AnyRef = null
+
+  /**
+   * @return the outputs or null if there are no outputs
+   */
+  def remoteOutputs: AnyRef = null
+
+  /** The complete list of fields. */
+  def functionFields: Seq[ArgumentSource] = ClassFieldCache.classFunctionFields(this.getClass)
+  /** The @Input fields. */
+  def inputFields: Seq[ArgumentSource] = ClassFieldCache.classInputFields(this.getClass)
+  /** The @Output fields. */
+  def outputFields: Seq[ArgumentSource] = ClassFieldCache.classOutputFields(this.getClass)
+  /** The @Argument fields. */
+  def argumentFields: Seq[ArgumentSource] = ClassFieldCache.classArgumentFields(this.getClass)
 }
 
 object QScript {

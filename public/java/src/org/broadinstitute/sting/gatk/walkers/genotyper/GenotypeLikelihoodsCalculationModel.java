@@ -59,10 +59,9 @@ public abstract class GenotypeLikelihoodsCalculationModel implements Cloneable {
     public enum Model {
         SNP,
         INDEL,
-        BOTH,
-        POOLSNP,
-        POOLINDEL,
-        POOLBOTH
+        GENERALPLOIDYSNP,
+        GENERALPLOIDYINDEL,
+        BOTH
     }
 
     public enum GENOTYPING_MODE {
@@ -104,7 +103,8 @@ public abstract class GenotypeLikelihoodsCalculationModel implements Cloneable {
                                                    final AlignmentContextUtils.ReadOrientation contextType,
                                                    final List<Allele> allAllelesToUse,
                                                    final boolean useBAQedPileup,
-                                                   final GenomeLocParser locParser);
+                                                   final GenomeLocParser locParser,
+                                                   final Map<String, org.broadinstitute.sting.utils.genotyper.PerReadAlleleLikelihoodMap> perReadAlleleLikelihoodMap);
 
 
     protected int getFilteredDepth(ReadBackedPileup pileup) {
@@ -116,4 +116,5 @@ public abstract class GenotypeLikelihoodsCalculationModel implements Cloneable {
 
         return count;
     }
+
 }

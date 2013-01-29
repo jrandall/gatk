@@ -50,7 +50,7 @@ public class SAMFileWriterStorage implements SAMFileWriter, Storage<SAMFileWrite
     private static Logger logger = Logger.getLogger(SAMFileWriterStorage.class);
 
     public SAMFileWriterStorage( SAMFileWriterStub stub ) {
-        this(stub,stub.getSAMFile());   
+        this(stub,stub.getOutputFile());
     }
 
     public SAMFileWriterStorage( SAMFileWriterStub stub, File file ) {
@@ -62,10 +62,11 @@ public class SAMFileWriterStorage implements SAMFileWriter, Storage<SAMFileWrite
         if (stub.getGenerateMD5())
             factory.setCreateMd5File(true);
         // Adjust max records in RAM.
+        // TODO -- this doesn't actually work because of a bug in Picard; do not use until fixed
         if(stub.getMaxRecordsInRam() != null)
             factory.setMaxRecordsInRam(stub.getMaxRecordsInRam());
 
-        if(stub.getSAMFile() != null) {
+        if(stub.getOutputFile() != null) {
             try {
                 this.writer = createBAMWriter(factory,stub.getFileHeader(),stub.isPresorted(),file,stub.getCompressionLevel());
             }
@@ -73,8 +74,8 @@ public class SAMFileWriterStorage implements SAMFileWriter, Storage<SAMFileWrite
                 throw new UserException.CouldNotCreateOutputFile(file,"file could not be created",ex);
             }
         }
-        else if(stub.getSAMOutputStream() != null){
-            this.writer = factory.makeSAMWriter( stub.getFileHeader(), stub.isPresorted(), stub.getSAMOutputStream());
+        else if(stub.getOutputStream() != null){
+            this.writer = factory.makeSAMWriter( stub.getFileHeader(), stub.isPresorted(), stub.getOutputStream());
         }
         else
             throw new UserException("Unable to write to SAM file; neither a target file nor a stream has been specified");

@@ -46,16 +46,20 @@ import java.util.Set;
 
 
 /**
- * Strictly validates a variants file.
+ * Validates a VCF file with an extra strict set of criteria.
  *
  * <p>
  * ValidateVariants is a GATK tool that takes a VCF file and validates much of the information inside it.
- * Checks include the correctness of the reference base(s), accuracy of AC & AN values, tests against rsIDs
- * when a dbSNP file is provided, and that all alternate alleles are present in at least one sample.
+ * In addition to standard adherence to the VCF specification, this tool performs extra checks to make ensure
+ * the information contained within the file is correct.  Checks include the correctness of the reference base(s),
+ * accuracy of AC & AN values, tests against rsIDs when a dbSNP file is provided, and that all alternate alleles
+ * are present in at least one sample.
+ *
+ * If you are looking simply to test the adherence to the VCF specification, use --validationType NONE.
  *
  * <h2>Input</h2>
  * <p>
- * A variant set to filter.
+ * A variant set to validate.
  * </p>
  *
  * <h2>Examples</h2>
@@ -79,10 +83,9 @@ public class ValidateVariants extends RodWalker<Integer, Integer> {
     protected DbsnpArgumentCollection dbsnp = new DbsnpArgumentCollection();
 
     public enum ValidationType {
-        ALL, REF, IDS, ALLELES, CHR_COUNTS
+        ALL, REF, IDS, ALLELES, CHR_COUNTS, NONE
     }
 
-    @Hidden
     @Argument(fullName = "validationType", shortName = "type", doc = "which validation type to run", required = false)
     protected ValidationType type = ValidationType.ALL;
 
@@ -130,35 +133,16 @@ public class ValidateVariants extends RodWalker<Integer, Integer> {
             return;
 
         // get the true reference allele
-        Allele reportedRefAllele = vc.getReference();
-        Allele observedRefAllele = null;
-        // insertions
-        if ( vc.isSimpleInsertion() ) {
-            observedRefAllele = Allele.create(Allele.NULL_ALLELE_STRING);
+        final Allele reportedRefAllele = vc.getReference();
+        final int refLength = reportedRefAllele.length();
+        if ( refLength > 100 ) {
+            logger.info(String.format("Reference allele is too long (%d) at position %s:%d; skipping that record.", refLength, vc.getChr(), vc.getStart()));
+            return;
         }
-        // deletions
-        else if ( vc.isSimpleDeletion() || vc.isMNP() ) {
-            // we can't validate arbitrarily long deletions
-            if ( reportedRefAllele.length() > 100 ) {
-                logger.info(String.format("Reference allele is too long (%d) at position %s:%d; skipping that record.", reportedRefAllele.length(), vc.getChr(), vc.getStart()));
-                return;
-            }
 
-            // deletions are associated with the (position of) the last (preceding) non-deleted base;
-            // hence to get actually deleted bases we need offset = 1
-            int offset = vc.isMNP() ? 0 : 1;
-            byte[] refBytes = ref.getBases();
-            byte[] trueRef = new byte[reportedRefAllele.length()];
-            for (int i = 0; i < reportedRefAllele.length(); i++)
-                trueRef[i] = refBytes[i+offset];
-            observedRefAllele = Allele.create(trueRef, true);
-        }
-        // SNPs, etc. but not mixed types because they are too difficult
-        else if ( !vc.isMixed() ) {
-            byte[] refByte = new byte[1];
-            refByte[0] = ref.getBase();
-            observedRefAllele = Allele.create(refByte, true);
-        }
+        final byte[] observedRefBases = new byte[refLength];
+        System.arraycopy(ref.getBases(), 0, observedRefBases, 0, refLength);
+        final Allele observedRefAllele = Allele.create(observedRefBases);
 
         // get the RS IDs
         Set<String> rsIDs = null;
@@ -171,10 +155,10 @@ public class ValidateVariants extends RodWalker<Integer, Integer> {
         try {
             switch( type ) {
                 case ALL:
-                    vc.extraStrictValidation(observedRefAllele, ref.getBase(), rsIDs);
+                    vc.extraStrictValidation(reportedRefAllele, observedRefAllele, rsIDs);
                     break;
                 case REF:
-                    vc.validateReferenceBases(observedRefAllele, ref.getBase());
+                    vc.validateReferenceBases(reportedRefAllele, observedRefAllele);
                     break;
                 case IDS:
                     vc.validateRSIDs(rsIDs);
@@ -191,7 +175,7 @@ public class ValidateVariants extends RodWalker<Integer, Integer> {
                 numErrors++;
                 logger.warn("***** " + e.getMessage() + " *****");
             } else {
-                throw new UserException.MalformedFile(file, e.getMessage());
+                throw new UserException.FailsStrictValidation(file, e.getMessage());
             }
         }
     }

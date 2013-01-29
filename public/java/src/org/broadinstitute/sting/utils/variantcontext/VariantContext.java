@@ -178,17 +178,11 @@ import java.util.*;
  */
 public class VariantContext implements Feature { // to enable tribble integration
     private final static boolean WARN_ABOUT_BAD_END = true;
+    private final static int MAX_ALLELE_SIZE_FOR_NON_SV = 150;
     final protected static Logger logger = Logger.getLogger(VariantContext.class);
-
-
     private boolean fullyDecoded = false;
     protected CommonInfo commonInfo = null;
     public final static double NO_LOG10_PERROR = CommonInfo.NO_LOG10_PERROR;
-
-    @Deprecated // ID is no longer stored in the attributes map
-    private final static String ID_KEY = "ID";
-
-    private final Byte REFERENCE_BASE_FOR_INDEL;
 
     public final static Set<String> PASSES_FILTERS = Collections.unmodifiableSet(new LinkedHashSet<String>());
 
@@ -228,7 +222,6 @@ public class VariantContext implements Feature { // to enable tribble integratio
     // ---------------------------------------------------------------------------------------------------------
 
     public enum Validation {
-        REF_PADDING,
         ALLELES,
         GENOTYPES
     }
@@ -250,7 +243,7 @@ public class VariantContext implements Feature { // to enable tribble integratio
         this(other.getSource(), other.getID(), other.getChr(), other.getStart(), other.getEnd(),
                 other.getAlleles(), other.getGenotypes(), other.getLog10PError(),
                 other.getFiltersMaybeNull(),
-                other.getAttributes(), other.REFERENCE_BASE_FOR_INDEL,
+                other.getAttributes(),
                 other.fullyDecoded, NO_VALIDATION);
     }
 
@@ -266,7 +259,6 @@ public class VariantContext implements Feature { // to enable tribble integratio
      * @param log10PError  qual
      * @param filters         filters: use null for unfiltered and empty set for passes filters
      * @param attributes      attributes
-     * @param referenceBaseForIndel   padded reference base
      * @param validationToPerform     set of validation steps to take
      */
     protected VariantContext(final String source,
@@ -279,7 +271,6 @@ public class VariantContext implements Feature { // to enable tribble integratio
                              final double log10PError,
                              final Set<String> filters,
                              final Map<String, Object> attributes,
-                             final Byte referenceBaseForIndel,
                              final boolean fullyDecoded,
                              final EnumSet<Validation> validationToPerform ) {
         if ( contig == null ) { throw new IllegalArgumentException("Contig cannot be null"); }
@@ -292,11 +283,6 @@ public class VariantContext implements Feature { // to enable tribble integratio
         this.ID = ID.equals(VCFConstants.EMPTY_ID_FIELD) ? VCFConstants.EMPTY_ID_FIELD : ID;
 
         this.commonInfo = new CommonInfo(source, log10PError, filters, attributes);
-        REFERENCE_BASE_FOR_INDEL = referenceBaseForIndel;
-
-        // todo -- remove me when this check is no longer necessary
-        if ( this.commonInfo.hasAttribute(ID_KEY) )
-            throw new IllegalArgumentException("Trying to create a VariantContext with a ID key.  Please use provided constructor argument ID");
 
         if ( alleles == null ) { throw new IllegalArgumentException("Alleles cannot be null"); }
 
@@ -340,11 +326,14 @@ public class VariantContext implements Feature { // to enable tribble integratio
      * in this VC is returned as the set of alleles in the subContext, even if
      * some of those alleles aren't in the samples
      *
-     * @param sampleNames
-     * @return
+     * WARNING: BE CAREFUL WITH rederiveAllelesFromGenotypes UNLESS YOU KNOW WHAT YOU ARE DOING?
+     *
+     * @param sampleNames    the sample names
+     * @param rederiveAllelesFromGenotypes if true, returns the alleles to just those in use by the samples, true should be default
+     * @return new VariantContext subsetting to just the given samples
      */
     public VariantContext subContextFromSamples(Set<String> sampleNames, final boolean rederiveAllelesFromGenotypes ) {
-        if ( sampleNames.containsAll(getSampleNames()) ) {
+        if ( sampleNames.containsAll(getSampleNames()) && ! rederiveAllelesFromGenotypes ) {
             return this; // fast path when you don't have any work to do
         } else {
             VariantContextBuilder builder = new VariantContextBuilder(this);
@@ -360,8 +349,18 @@ public class VariantContext implements Feature { // to enable tribble integratio
         }
     }
 
+    /**
+     * @see #subContextFromSamples(java.util.Set, boolean) with rederiveAllelesFromGenotypes = true
+     *
+     * @param sampleNames
+     * @return
+     */
+    public VariantContext subContextFromSamples(final Set<String> sampleNames) {
+        return subContextFromSamples(sampleNames, true);
+    }
+
     public VariantContext subContextFromSample(String sampleName) {
-        return subContextFromSamples(Collections.singleton(sampleName), true);
+        return subContextFromSamples(Collections.singleton(sampleName));
     }
 
     /**
@@ -501,7 +500,7 @@ public class VariantContext implements Feature { // to enable tribble integratio
      */
     public boolean isSimpleInsertion() {
         // can't just call !isSimpleDeletion() because of complex indels
-        return getType() == Type.INDEL && getReference().isNull() && isBiallelic();
+        return getType() == Type.INDEL && isBiallelic() && getReference().length() == 1;
     }
 
     /**
@@ -509,7 +508,7 @@ public class VariantContext implements Feature { // to enable tribble integratio
      */
     public boolean isSimpleDeletion() {
         // can't just call !isSimpleInsertion() because of complex indels
-        return getType() == Type.INDEL && getAlternateAllele(0).isNull() && isBiallelic();
+        return getType() == Type.INDEL && isBiallelic() && getAlternateAllele(0).length() == 1;
     }
 
     /**
@@ -521,6 +520,28 @@ public class VariantContext implements Feature { // to enable tribble integratio
 
     public boolean isSymbolic() {
         return getType() == Type.SYMBOLIC;
+    }
+
+    public boolean isStructuralIndel() {
+        if ( getType() == Type.INDEL ) {
+            List<Integer> sizes = getIndelLengths();
+            if ( sizes != null ) {
+                for ( Integer length : sizes ) {
+                    if ( length > MAX_ALLELE_SIZE_FOR_NON_SV ) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     *
+     * @return true if the variant is symbolic or a large indel
+     */
+    public boolean isSymbolicOrSV() {
+        return isSymbolic() || isStructuralIndel();
     }
 
     public boolean isMNP() {
@@ -551,22 +572,6 @@ public class VariantContext implements Feature { // to enable tribble integratio
 
     public String getID() {
         return ID;
-    }
-
-    public boolean hasReferenceBaseForIndel() {
-        return REFERENCE_BASE_FOR_INDEL != null;
-    }
-
-    // the indel base that gets stripped off for indels
-    public Byte getReferenceBaseForIndel() {
-        return REFERENCE_BASE_FOR_INDEL;
-    }
-
-    public String getAlleleStringWithRefPadding(final Allele allele) {
-        if ( VCFAlleleClipper.needsPadding(this) )
-            return VCFAlleleClipper.padAllele(this, allele).getDisplayString();
-        else
-            return allele.getDisplayString();
     }
 
 
@@ -630,14 +635,15 @@ public class VariantContext implements Feature { // to enable tribble integratio
     }
 
     /**
-     * Returns the maximum ploidy of all samples in this VC, or -1 if there are no genotypes
+     * Returns the maximum ploidy of all samples in this VC, or default if there are no genotypes
      *
      * This function is caching, so it's only expensive on the first call
      *
-     * @return -1, or the max ploidy
+     * @param defaultPloidy the default ploidy, if all samples are no-called
+     * @return default, or the max ploidy
      */
-    public int getMaxPloidy() {
-        return genotypes.getMaxPloidy();
+    public int getMaxPloidy(final int defaultPloidy) {
+        return genotypes.getMaxPloidy(defaultPloidy);
     }
 
     /**
@@ -808,8 +814,8 @@ public class VariantContext implements Feature { // to enable tribble integratio
      * Returns a map from sampleName -> Genotype for the genotype associated with sampleName.  Returns a map
      * for consistency with the multi-get function.
      *
-     * @param sampleName
-     * @return
+     * @param sampleName   the sample name
+     * @return mapping from sample name to genotype
      * @throws IllegalArgumentException if sampleName isn't bound to a genotype
      */
     public GenotypesContext getGenotypes(String sampleName) {
@@ -823,7 +829,7 @@ public class VariantContext implements Feature { // to enable tribble integratio
      * For testing convenience only
      *
      * @param sampleNames a unique list of sample names
-     * @return
+     * @return subsetting genotypes context
      * @throws IllegalArgumentException if sampleName isn't bound to a genotype
      */
     protected GenotypesContext getGenotypes(Collection<String> sampleNames) {
@@ -1011,13 +1017,13 @@ public class VariantContext implements Feature { // to enable tribble integratio
     /**
      * Run all extra-strict validation tests on a Variant Context object
      *
-     * @param reference        the true reference allele
-     * @param paddedRefBase    the reference base used for padding indels
-     * @param rsIDs            the true dbSNP IDs
+     * @param reportedReference   the reported reference allele
+     * @param observedReference   the actual reference allele
+     * @param rsIDs               the true dbSNP IDs
      */
-    public void extraStrictValidation(Allele reference, Byte paddedRefBase, Set<String> rsIDs) {
+    public void extraStrictValidation(final Allele reportedReference, final Allele observedReference, final Set<String> rsIDs) {
         // validate the reference
-        validateReferenceBases(reference, paddedRefBase);
+        validateReferenceBases(reportedReference, observedReference);
 
         // validate the RS IDs
         validateRSIDs(rsIDs);
@@ -1032,18 +1038,9 @@ public class VariantContext implements Feature { // to enable tribble integratio
         //checkReferenceTrack();
     }
 
-    public void validateReferenceBases(Allele reference, Byte paddedRefBase) {
-        if ( reference == null )
-            return;
-
-        // don't validate if we're a complex event
-        if ( !isComplexIndel() && !reference.isNull() && !reference.basesMatch(getReference()) ) {
-            throw new TribbleException.InternalCodecException(String.format("the REF allele is incorrect for the record at position %s:%d, fasta says %s vs. VCF says %s", getChr(), getStart(), reference.getBaseString(), getReference().getBaseString()));
-        }
-
-        // we also need to validate the padding base for simple indels
-        if ( hasReferenceBaseForIndel() && !getReferenceBaseForIndel().equals(paddedRefBase) ) {
-            throw new TribbleException.InternalCodecException(String.format("the padded REF base is incorrect for the record at position %s:%d, fasta says %s vs. VCF says %s", getChr(), getStart(), (char)paddedRefBase.byteValue(), (char)getReferenceBaseForIndel().byteValue()));
+    public void validateReferenceBases(final Allele reportedReference, final Allele observedReference) {
+        if ( reportedReference != null && !reportedReference.basesMatch(observedReference) ) {
+            throw new TribbleException.InternalCodecException(String.format("the REF allele is incorrect for the record at position %s:%d, fasta says %s vs. VCF says %s", getChr(), getStart(), observedReference.getBaseString(), reportedReference.getBaseString()));
         }
     }
 
@@ -1067,15 +1064,17 @@ public class VariantContext implements Feature { // to enable tribble integratio
             if ( g.isCalled() )
                 observedAlleles.addAll(g.getAlleles());
         }
+        if ( observedAlleles.contains(Allele.NO_CALL) )
+            observedAlleles.remove(Allele.NO_CALL);
 
         if ( reportedAlleles.size() != observedAlleles.size() )
-            throw new TribbleException.InternalCodecException(String.format("the ALT allele(s) for the record at position %s:%d do not match what is observed in the per-sample genotypes", getChr(), getStart()));
+            throw new TribbleException.InternalCodecException(String.format("one or more of the ALT allele(s) for the record at position %s:%d are not observed at all in the sample genotypes", getChr(), getStart()));
 
         int originalSize = reportedAlleles.size();
         // take the intersection and see if things change
         observedAlleles.retainAll(reportedAlleles);
         if ( observedAlleles.size() != originalSize )
-            throw new TribbleException.InternalCodecException(String.format("the ALT allele(s) for the record at position %s:%d do not match what is observed in the per-sample genotypes", getChr(), getStart()));
+            throw new TribbleException.InternalCodecException(String.format("one or more of the ALT allele(s) for the record at position %s:%d are not observed at all in the sample genotypes", getChr(), getStart()));
     }
 
     public void validateChromosomeCounts() {
@@ -1135,7 +1134,6 @@ public class VariantContext implements Feature { // to enable tribble integratio
         for (final Validation val : validationToPerform ) {
             switch (val) {
                 case ALLELES: validateAlleles(); break;
-                case REF_PADDING: validateReferencePadding(); break;
                 case GENOTYPES: validateGenotypes(); break;
                 default: throw new IllegalArgumentException("Unexpected validation mode " + val);
             }
@@ -1151,8 +1149,7 @@ public class VariantContext implements Feature { // to enable tribble integratio
         if ( hasAttribute(VCFConstants.END_KEY) ) {
             final int end = getAttributeAsInt(VCFConstants.END_KEY, -1);
             assert end != -1;
-            if ( end != getEnd() && end != getEnd() + 1 ) {
-                // the end is allowed to 1 bigger because of the padding
+            if ( end != getEnd() ) {
                 final String message = "Badly formed variant context at location " + getChr() + ":"
                         + getStart() + "; getEnd() was " + getEnd()
                         + " but this VariantContext contains an END key with value " + end;
@@ -1161,23 +1158,19 @@ public class VariantContext implements Feature { // to enable tribble integratio
                 else
                     throw new ReviewedStingException(message);
             }
+        } else {
+            final long length = (stop - start) + 1;
+            if ( ! hasSymbolicAlleles() && length != getReference().length() ) {
+                throw new IllegalStateException("BUG: GenomeLoc " + contig + ":" + start + "-" + stop + " has a size == " + length + " but the variation reference allele has length " + getReference().length() + " this = " + this);
+            }
         }
     }
 
-    private void validateReferencePadding() {
-        if ( hasSymbolicAlleles() ) // symbolic alleles don't need padding...
-            return;
-
-        boolean needsPadding = (getReference().length() == getEnd() - getStart()); // off by one because padded base was removed
-
-        if ( needsPadding && !hasReferenceBaseForIndel() )
-            throw new ReviewedStingException("Badly formed variant context at location " + getChr() + ":" + getStart() + "; no padded reference base was provided.");
-    }
-
     private void validateAlleles() {
-        // check alleles
-        boolean alreadySeenRef = false, alreadySeenNull = false;
-        for ( Allele allele : alleles ) {
+
+        boolean alreadySeenRef = false;
+
+        for ( final Allele allele : alleles ) {
             // make sure there's only one reference allele
             if ( allele.isReference() ) {
                 if ( alreadySeenRef ) throw new IllegalArgumentException("BUG: Received two reference tagged alleles in VariantContext " + alleles + " this=" + this);
@@ -1187,26 +1180,11 @@ public class VariantContext implements Feature { // to enable tribble integratio
             if ( allele.isNoCall() ) {
                 throw new IllegalArgumentException("BUG: Cannot add a no call allele to a variant context " + alleles + " this=" + this);
             }
-
-            // make sure there's only one null allele
-            if ( allele.isNull() ) {
-                if ( alreadySeenNull ) throw new IllegalArgumentException("BUG: Received two null alleles in VariantContext " + alleles + " this=" + this);
-                alreadySeenNull = true;
-            }
         }
 
         // make sure there's one reference allele
         if ( ! alreadySeenRef )
             throw new IllegalArgumentException("No reference allele found in VariantContext");
-
-//        if ( getType() == Type.INDEL ) {
-//            if ( getReference().length() != (getLocation().size()-1) ) {
-        long length = (stop - start) + 1;
-        if ( ! hasSymbolicAlleles()
-                && ((getReference().isNull() && length != 1 )
-                    || (getReference().isNonNull() && (length - getReference().length()  > 1)))) {
-            throw new IllegalStateException("BUG: GenomeLoc " + contig + ":" + start + "-" + stop + " has a size == " + length + " but the variation reference allele has length " + getReference().length() + " this = " + this);
-        }
     }
 
     private void validateGenotypes() {
@@ -1289,6 +1267,7 @@ public class VariantContext implements Feature { // to enable tribble integratio
         // performs a pairwise comparison of a single alternate allele against the reference allele (whereas the MIXED type
         // is reserved for cases of multiple alternate alleles of different types).  Therefore, if we've reached this point
         // in the code (so we're not a SNP, MNP, or symbolic allele), we absolutely must be an INDEL.
+
         return Type.INDEL;
 
         // old incorrect logic:
@@ -1390,7 +1369,7 @@ public class VariantContext implements Feature { // to enable tribble integratio
     private final Map<String, Object> fullyDecodeAttributes(final Map<String, Object> attributes,
                                                             final VCFHeader header,
                                                             final boolean lenientDecoding) {
-        final Map<String, Object> newAttributes = new HashMap<String, Object>(attributes.size());
+        final Map<String, Object> newAttributes = new HashMap<String, Object>(10);
 
         for ( final Map.Entry<String, Object> attr : attributes.entrySet() ) {
             final String field = attr.getKey();
@@ -1533,15 +1512,32 @@ public class VariantContext implements Feature { // to enable tribble integratio
         return best;
     }
 
+    /**
+     * Lookup the index of allele in this variant context
+     *
+     * @param allele the allele whose index we want to get
+     * @return the index of the allele into getAlleles(), or -1 if it cannot be found
+     */
+    public int getAlleleIndex(final Allele allele) {
+        return getAlleles().indexOf(allele);
+    }
+
+    /**
+     * Return the allele index #getAlleleIndex for each allele in alleles
+     *
+     * @param alleles the alleles we want to look up
+     * @return a list of indices for each allele, in order
+     */
+    public List<Integer> getAlleleIndices(final Collection<Allele> alleles) {
+        final List<Integer> indices = new LinkedList<Integer>();
+        for ( final Allele allele : alleles )
+            indices.add(getAlleleIndex(allele));
+        return indices;
+    }
+
     public int[] getGLIndecesOfAlternateAllele(Allele targetAllele) {
-
-        int index = 1;
-        for ( Allele allele : getAlternateAlleles() ) {
-            if ( allele.equals(targetAllele) )
-                break;
-            index++;
-        }
-
+        final int index = getAlleleIndex(targetAllele);
+        if ( index == -1 ) throw new IllegalArgumentException("Allele " + targetAllele + " not in this VariantContex " + this);
         return GenotypeLikelihoods.getPLIndecesOfAlleles(0, index);
     }
 }

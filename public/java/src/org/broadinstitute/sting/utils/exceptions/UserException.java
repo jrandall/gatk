@@ -27,8 +27,10 @@ package org.broadinstitute.sting.utils.exceptions;
 import net.sf.samtools.SAMFileHeader;
 import net.sf.samtools.SAMRecord;
 import net.sf.samtools.SAMSequenceDictionary;
+import org.broadinstitute.sting.gatk.phonehome.GATKRunReport;
 import org.broadinstitute.sting.utils.GenomeLoc;
 import org.broadinstitute.sting.utils.help.DocumentedGATKFeature;
+import org.broadinstitute.sting.utils.help.HelpConstants;
 import org.broadinstitute.sting.utils.sam.ReadUtils;
 import org.broadinstitute.sting.utils.variantcontext.VariantContext;
 
@@ -59,6 +61,18 @@ public class UserException extends ReviewedStingException {
     public static class CommandLineException extends UserException {
         public CommandLineException(String message) {
             super(String.format("Invalid command line: %s", message));
+        }
+    }
+
+    public static class MalformedReadFilterException extends CommandLineException {
+        public MalformedReadFilterException(String message) {
+            super(String.format("Malformed read filter: %s",message));
+        }
+    }
+
+    public static class MalformedWalkerArgumentsException extends CommandLineException {
+        public MalformedWalkerArgumentsException(String message) {
+            super(String.format("Malformed walker argument: %s",message));
         }
     }
 
@@ -116,6 +130,12 @@ public class UserException extends ReviewedStingException {
         }
     }
 
+    public static class LocalParallelizationProblem extends UserException {
+        public LocalParallelizationProblem(final File file) {
+            super(String.format("There was a failure because temporary file %s could not be found while running the GATK with more than one thread.  Possible causes for this problem include: your system's open file handle limit is too small, your output or temp directories do not have sufficient space, or just an isolated file system blip", file.getAbsolutePath()));
+        }
+    }
+
     public static class NotEnoughMemory extends UserException {
         public NotEnoughMemory() {
             super(String.format("There was a failure because you did not provide enough memory to run this program.  See the -Xmx JVM argument to adjust the maximum heap size provided to Java"));
@@ -125,6 +145,12 @@ public class UserException extends ReviewedStingException {
     public static class ErrorWritingBamFile extends UserException {
         public ErrorWritingBamFile(String message) {
             super(String.format("An error occurred when trying to write the BAM file.  Usually this happens when there is not enough space in the directory to which the data is being written (generally the temp directory) or when your system's open file handle limit is too small.  To tell Java to use a bigger/better file system use -Djava.io.tmpdir=X on the command line.  The exact error was %s", message));
+        }
+    }
+
+    public static class NoSpaceOnDevice extends UserException {
+        public NoSpaceOnDevice() {
+            super("There is no space left on the device, so writing failed");
         }
     }
 
@@ -139,6 +165,10 @@ public class UserException extends ReviewedStingException {
 
         public CouldNotReadInputFile(File file, String message) {
             super(String.format("Couldn't read file %s because %s", file.getAbsolutePath(), message));
+        }
+
+        public CouldNotReadInputFile(String file, String message) {
+            super(String.format("Couldn't read file %s because %s", file, message));
         }
 
         public CouldNotReadInputFile(File file, String message, Exception e) {
@@ -210,6 +240,16 @@ public class UserException extends ReviewedStingException {
         }
     }
 
+    public static class MisencodedBAM extends UserException {
+        public MisencodedBAM(SAMRecord read, String message) {
+            this(read.getFileSource() != null ? read.getFileSource().getReader().toString() : "(none)", message);
+        }
+
+        public MisencodedBAM(String source, String message) {
+            super(String.format("SAM/BAM file %s appears to be using the wrong encoding for quality scores: %s; please see the GATK --help documentation for options related to this error", source, message));
+        }
+    }
+
     public static class MalformedVCF extends UserException {
         public MalformedVCF(String message, String line) {
             super(String.format("The provided VCF file is malformed at line %s: %s", line, message));
@@ -238,7 +278,7 @@ public class UserException extends ReviewedStingException {
 
     public static class ReadMissingReadGroup extends MalformedBAM {
         public ReadMissingReadGroup(SAMRecord read) {
-            super(read, String.format("Read %s is either missing the read group or its read group is not defined in the BAM header, both of which are required by the GATK.  Please use http://www.broadinstitute.org/gsa/wiki/index.php/ReplaceReadGroups to fix this problem", read.getReadName()));
+            super(read, String.format("Read %s is either missing the read group or its read group is not defined in the BAM header, both of which are required by the GATK.  Please use " + HelpConstants.forumPost("discussion/59/companion-utilities-replacereadgroups to fix this problem"), read.getReadName()));
         }
     }
 
@@ -251,6 +291,12 @@ public class UserException extends ReviewedStingException {
     public static class MissortedFile extends UserException {
         public MissortedFile(File file, String message, Exception e) {
             super(String.format("Missorted Input file: %s is must be sorted in coordinate order. %s and got error %s", file, message, getMessage(e)));
+        }
+    }
+
+    public static class FailsStrictValidation extends UserException {
+        public FailsStrictValidation(File f, String message) {
+            super(String.format("File %s fails strict validation: %s", f.getAbsolutePath(), message));
         }
     }
 
@@ -308,7 +354,7 @@ public class UserException extends ReviewedStingException {
             super(String.format("Lexicographically sorted human genome sequence detected in %s."
                     + "\nFor safety's sake the GATK requires human contigs in karyotypic order: 1, 2, ..., 10, 11, ..., 20, 21, 22, X, Y with M either leading or trailing these contigs."
                     + "\nThis is because all distributed GATK resources are sorted in karyotypic order, and your processing will fail when you need to use these files."
-                    + "\nYou can use the ReorderSam utility to fix this problem: http://www.broadinstitute.org/gsa/wiki/index.php/ReorderSam"
+                    + "\nYou can use the ReorderSam utility to fix this problem: " + HelpConstants.forumPost("discussion/58/companion-utilities-reordersam")
                     + "\n  %s contigs = %s",
                     name, name, ReadUtils.prettyPrintSequenceRecords(dict)));
         }
@@ -323,6 +369,9 @@ public class UserException extends ReviewedStingException {
     }
 
     public static class CannotExecuteQScript extends UserException {
+        public CannotExecuteQScript(String message) {
+            super(String.format("Unable to execute QScript: " + message));
+        }
         public CannotExecuteQScript(String message, Exception e) {
             super(String.format("Unable to execute QScript: " + message), e);
         }
@@ -339,6 +388,17 @@ public class UserException extends ReviewedStingException {
         }
     }
 
+    public static class CouldNotCreateReferenceFAIorDictForGzippedRef extends UserException {
+        public CouldNotCreateReferenceFAIorDictForGzippedRef(final File f) {
+            super("Although the GATK can process .gz reference sequences, it currently cannot create FAI " +
+                    "or DICT files for them.  In order to use the GATK with reference.fasta.gz you will need to " +
+                    "create .dict and .fai files for reference.fasta.gz and name them reference.fasta.gz.fai and " +
+                    "reference.dict.  Potentially the easiest way to do this is to uncompress reference.fasta, " +
+                    "run the GATK to create the .dict and .fai files, and copy them to the appropriate location. " +
+                    "Sorry for the inconvenience.");
+        }
+    }
+
     public static class CouldNotCreateReferenceIndexFileBecauseOfLock extends UserException.CouldNotCreateReferenceIndexFile {
         public CouldNotCreateReferenceIndexFileBecauseOfLock(File f) {
             super(f, "could not be written because an exclusive file lock could not be obtained. " +
@@ -351,8 +411,8 @@ public class UserException extends ReviewedStingException {
     public static class UnreadableKeyException extends UserException {
         public UnreadableKeyException ( File f, Exception e ) {
             super(String.format("Key file %s cannot be read (possibly the key file is corrupt?). Error was: %s. " +
-                                "Please see http://www.broadinstitute.org/gsa/wiki/index.php/Phone_home for help.",
-                                f.getAbsolutePath(), getMessage(e)));
+                                "Please see %s for help.",
+                                f.getAbsolutePath(), getMessage(e), GATKRunReport.PHONE_HOME_DOCS_URL));
         }
 
         public UnreadableKeyException ( String message, Exception e ) {
@@ -361,8 +421,8 @@ public class UserException extends ReviewedStingException {
 
         public UnreadableKeyException ( String message ) {
             super(String.format("Key file cannot be read (possibly the key file is corrupt?): %s. " +
-                                "Please see http://www.broadinstitute.org/gsa/wiki/index.php/Phone_home for help.",
-                                message));
+                                "Please see %s for help.",
+                                message, GATKRunReport.PHONE_HOME_DOCS_URL));
         }
     }
 
@@ -370,9 +430,8 @@ public class UserException extends ReviewedStingException {
         public KeySignatureVerificationException ( File f ) {
             super(String.format("The signature in key file %s failed cryptographic verification. " +
                                 "If this key was valid in the past, it's likely been revoked. " +
-                                "Please see http://www.broadinstitute.org/gsa/wiki/index.php/Phone_home " +
-                                "for help.",
-                                f.getAbsolutePath()));
+                                "Please see %s for help.",
+                                f.getAbsolutePath(), GATKRunReport.PHONE_HOME_DOCS_URL));
         }
     }
 }

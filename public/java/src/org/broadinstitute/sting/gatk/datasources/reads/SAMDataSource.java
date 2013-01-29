@@ -24,17 +24,16 @@
 
 package org.broadinstitute.sting.gatk.datasources.reads;
 
-import net.sf.picard.reference.IndexedFastaSequenceFile;
 import net.sf.picard.sam.MergingSamRecordIterator;
 import net.sf.picard.sam.SamFileHeaderMerger;
 import net.sf.samtools.*;
 import net.sf.samtools.util.CloseableIterator;
 import net.sf.samtools.util.RuntimeIOException;
 import org.apache.log4j.Logger;
-import org.broadinstitute.sting.gatk.DownsamplingMethod;
 import org.broadinstitute.sting.gatk.ReadMetrics;
 import org.broadinstitute.sting.gatk.ReadProperties;
 import org.broadinstitute.sting.gatk.arguments.ValidationExclusion;
+import org.broadinstitute.sting.gatk.downsampling.*;
 import org.broadinstitute.sting.gatk.filters.CountingFilteringIterator;
 import org.broadinstitute.sting.gatk.filters.ReadFilter;
 import org.broadinstitute.sting.gatk.iterators.*;
@@ -42,12 +41,9 @@ import org.broadinstitute.sting.gatk.resourcemanagement.ThreadAllocation;
 import org.broadinstitute.sting.utils.GenomeLocParser;
 import org.broadinstitute.sting.utils.GenomeLocSortedSet;
 import org.broadinstitute.sting.utils.SimpleTimer;
-import org.broadinstitute.sting.utils.baq.BAQ;
-import org.broadinstitute.sting.utils.baq.BAQSamIterator;
+import org.broadinstitute.sting.utils.baq.ReadTransformingIterator;
 import org.broadinstitute.sting.utils.exceptions.ReviewedStingException;
 import org.broadinstitute.sting.utils.exceptions.UserException;
-import org.broadinstitute.sting.utils.recalibration.BQSRSamIterator;
-import org.broadinstitute.sting.utils.recalibration.BaseRecalibration;
 import org.broadinstitute.sting.utils.sam.GATKSamRecordFactory;
 
 import java.io.File;
@@ -90,12 +86,19 @@ public class SAMDataSource {
     private final SAMFileReader.ValidationStringency validationStringency;
 
     /**
+     * Do we want to remove the program records from this data source?
+     */
+    private final boolean removeProgramRecords;
+
+    /**
      * Store BAM indices for each reader present.
      */
     private final Map<SAMReaderID,GATKBAMIndex> bamIndices = new HashMap<SAMReaderID,GATKBAMIndex>();
 
     /**
      * How far along is each reader?
+     *
+     * TODO: delete this once the experimental downsampling engine fork collapses
      */
     private final Map<SAMReaderID,GATKBAMFileSpan> readerPositions = new HashMap<SAMReaderID,GATKBAMFileSpan>();
 
@@ -195,12 +198,10 @@ public class SAMDataSource {
                 downsamplingMethod,
                 exclusionList,
                 supplementalFilters,
+                Collections.<ReadTransformer>emptyList(),
                 includeReadsWithDeletionAtLoci,
-                BAQ.CalculationMode.OFF,
-                BAQ.QualityMode.DONT_MODIFY,
-                null, // no BAQ
-                null, // no BQSR
-                (byte) -1);
+                (byte) -1,
+                false);
     }
 
     /**
@@ -228,12 +229,10 @@ public class SAMDataSource {
             DownsamplingMethod downsamplingMethod,
             ValidationExclusion exclusionList,
             Collection<ReadFilter> supplementalFilters,
+            List<ReadTransformer> readTransformers,
             boolean includeReadsWithDeletionAtLoci,
-            BAQ.CalculationMode cmode,
-            BAQ.QualityMode qmode,
-            IndexedFastaSequenceFile refReader,
-            BaseRecalibration bqsrApplier,
-            byte defaultBaseQualities) {
+            byte defaultBaseQualities,
+            boolean removeProgramRecords) {
         this.readMetrics = new ReadMetrics();
         this.genomeLocParser = genomeLocParser;
 
@@ -249,12 +248,13 @@ public class SAMDataSource {
             dispatcher = null;
 
         validationStringency = strictness;
+        this.removeProgramRecords = removeProgramRecords;
         if(readBufferSize != null)
-            ReadShard.setReadBufferSize(readBufferSize);
+            ReadShard.setReadBufferSize(readBufferSize);   // TODO: use of non-final static variable here is just awful, especially for parallel tests
         else {
             // Choose a sensible default for the read buffer size.  For the moment, we're picking 1000 reads per BAM per shard (which effectively
             // will mean per-thread once ReadWalkers are parallelized) with a max cap of 250K reads in memory at once.
-            ReadShard.setReadBufferSize(Math.min(1000*samFiles.size(),250000));
+            ReadShard.setReadBufferSize(Math.min(10000*samFiles.size(),250000));
         }
 
         resourcePool = new SAMResourcePool(Integer.MAX_VALUE);
@@ -295,16 +295,14 @@ public class SAMDataSource {
         readProperties = new ReadProperties(
                 samFiles,
                 mergedHeader,
+                sortOrder,
                 useOriginalBaseQualities,
                 strictness,
                 downsamplingMethod,
                 exclusionList,
                 supplementalFilters,
+                readTransformers,
                 includeReadsWithDeletionAtLoci,
-                cmode,
-                qmode,
-                refReader,
-                bqsrApplier,
                 defaultBaseQualities);
 
         // cache the read group id (original) -> read group id (merged)
@@ -380,7 +378,10 @@ public class SAMDataSource {
     /**
      * Retrieves the current position within the BAM file.
      * @return A mapping of reader to current position.
+     *
+     * TODO: delete this once the experimental downsampling engine fork collapses
      */
+    @Deprecated
     public Map<SAMReaderID,GATKBAMFileSpan> getCurrentPosition() {
         return readerPositions;
     }
@@ -463,9 +464,15 @@ public class SAMDataSource {
     }
 
     /**
-     * Fill the given buffering shard with reads.
+     * Legacy method to fill the given buffering shard with reads.
+     *
+     * Shard.fill() is used instead of this method unless legacy downsampling is enabled
+     *
+     * TODO: delete this method once the experimental downsampling engine fork collapses
+     *
      * @param shard Shard to fill.
      */
+    @Deprecated
     public void fillShard(Shard shard) {
         if(!shard.buffersReads())
             throw new ReviewedStingException("Attempting to fill a non-buffering shard.");
@@ -478,9 +485,15 @@ public class SAMDataSource {
 
         CloseableIterator<SAMRecord> iterator = getIterator(readers,shard,sortOrder == SAMFileHeader.SortOrder.coordinate);
         while(!shard.isBufferFull() && iterator.hasNext()) {
-            read = iterator.next();
-            shard.addRead(read);
-            noteFilePositionUpdate(positionUpdates,read);
+            final SAMRecord nextRead = iterator.next();
+            if ( read == null || (nextRead.getReferenceIndex().equals(read.getReferenceIndex())) ) {
+                // only add reads to the shard if they are on the same contig
+                read = nextRead;
+                shard.addRead(read);
+                noteFilePositionUpdate(positionUpdates,read);
+            } else {
+                break;
+            }
         }
 
         // If the reads are sorted in queryname order, ensure that all reads
@@ -502,6 +515,10 @@ public class SAMDataSource {
             readerPositions.put(readers.getReaderID(positionUpdate.getKey()),positionUpdate.getValue());
     }
 
+    /*
+     * TODO: delete this method once the experimental downsampling engine fork collapses
+     */
+    @Deprecated
     private void noteFilePositionUpdate(Map<SAMFileReader,GATKBAMFileSpan> positionMapping, SAMRecord read) {
         GATKBAMFileSpan endChunk = new GATKBAMFileSpan(read.getFileSource().getFilePointer().getContentsFollowing());
         positionMapping.put(read.getFileSource().getReader(),endChunk);
@@ -512,8 +529,7 @@ public class SAMDataSource {
             return shard.iterator();
         }
         else {
-            SAMReaders readers = resourcePool.getAvailableReaders();
-            return getIterator(readers,shard,shard instanceof ReadShard);
+            return getIterator(shard);
         }
     }
 
@@ -533,11 +549,42 @@ public class SAMDataSource {
 
     /**
      * Initialize the current reader positions
+     *
+     * TODO: delete this once the experimental downsampling engine fork collapses
+     *
      * @param readers
      */
+    @Deprecated
     private void initializeReaderPositions(SAMReaders readers) {
         for(SAMReaderID id: getReaderIDs())
             readerPositions.put(id,new GATKBAMFileSpan(readers.getReader(id).getFilePointerSpanningReads()));
+    }
+
+    /**
+     * Get the initial reader positions across all BAM files
+     *
+     * @return the start positions of the first chunk of reads for all BAM files
+     */
+    protected Map<SAMReaderID, GATKBAMFileSpan> getInitialReaderPositions() {
+        Map<SAMReaderID, GATKBAMFileSpan> initialPositions = new HashMap<SAMReaderID, GATKBAMFileSpan>();
+        SAMReaders readers = resourcePool.getAvailableReaders();
+
+        for ( SAMReaderID id: getReaderIDs() ) {
+            initialPositions.put(id, new GATKBAMFileSpan(readers.getReader(id).getFilePointerSpanningReads()));
+        }
+
+        resourcePool.releaseReaders(readers);
+        return initialPositions;
+    }
+
+    /**
+     * Get an iterator over the data types specified in the shard.
+     *
+     * @param shard The shard specifying the data limits.
+     * @return An iterator over the selected data.
+     */
+    protected StingSAMIterator getIterator( Shard shard ) {
+        return getIterator(resourcePool.getAvailableReaders(), shard, shard instanceof ReadShard);
     }
 
     /**
@@ -577,6 +624,7 @@ public class SAMDataSource {
             iterator = new MalformedBAMErrorReformatingIterator(id.samFile, iterator);
             if(shard.getGenomeLocs().size() > 0)
                 iterator = new IntervalOverlapFilteringIterator(iterator,shard.getGenomeLocs());
+
             iteratorMap.put(readers.getReader(id), iterator);
         }
 
@@ -589,11 +637,9 @@ public class SAMDataSource {
                 readProperties.getDownsamplingMethod().toFraction,
                 readProperties.getValidationExclusionList().contains(ValidationExclusion.TYPE.NO_READ_ORDER_VERIFICATION),
                 readProperties.getSupplementalFilters(),
-                readProperties.getBAQCalculationMode(),
-                readProperties.getBAQQualityMode(),
-                readProperties.getRefReader(),
-                readProperties.getBQSRApplier(),
-                readProperties.defaultBaseQualities());
+                readProperties.getReadTransformers(),
+                readProperties.defaultBaseQualities(),
+                shard instanceof LocusShard);
     }
 
     private class BAMCodecIterator implements CloseableIterator<SAMRecord> {
@@ -650,6 +696,7 @@ public class SAMDataSource {
      * @param noValidationOfReadOrder Another trigger for the verifying iterator?  TODO: look into this.
      * @param supplementalFilters additional filters to apply to the reads.
      * @param defaultBaseQualities if the reads have incomplete quality scores, set them all to defaultBaseQuality.
+     * @param isLocusBasedTraversal true if we're dealing with a read stream from a LocusShard
      * @return An iterator wrapped with filters reflecting the passed-in parameters.  Will not be null.
      */
     protected StingSAMIterator applyDecoratingIterators(ReadMetrics readMetrics,
@@ -659,39 +706,94 @@ public class SAMDataSource {
                                                         Double downsamplingFraction,
                                                         Boolean noValidationOfReadOrder,
                                                         Collection<ReadFilter> supplementalFilters,
-                                                        BAQ.CalculationMode cmode,
-                                                        BAQ.QualityMode qmode,
-                                                        IndexedFastaSequenceFile refReader,
-                                                        BaseRecalibration bqsrApplier,
-                                                        byte defaultBaseQualities) {
+                                                        List<ReadTransformer> readTransformers,
+                                                        byte defaultBaseQualities,
+                                                        boolean isLocusBasedTraversal ) {
 
-        // *********************************************************************************** //
-        // *  NOTE: ALL FILTERING SHOULD BE DONE BEFORE ANY ITERATORS THAT MODIFY THE READS! * //
-        // *     (otherwise we will process something that we may end up throwing away)      * //
-        // *********************************************************************************** //
+        // ************************************************************************************************ //
+        // *  NOTE: ALL FILTERING/DOWNSAMPLING SHOULD BE DONE BEFORE ANY ITERATORS THAT MODIFY THE READS! * //
+        // *     (otherwise we will process something that we may end up throwing away)                   * //
+        // ************************************************************************************************ //
 
-        if (downsamplingFraction != null)
-            wrappedIterator = new DownsampleIterator(wrappedIterator, downsamplingFraction);
+        wrappedIterator = StingSAMIteratorAdapter.adapt(new CountingFilteringIterator(readMetrics,wrappedIterator,supplementalFilters));
+
+        // If we're using the new downsampling implementation, apply downsampling iterators at this
+        // point in the read stream for most (but not all) cases
+        if ( ! readProperties.getDownsamplingMethod().useLegacyDownsampler ) {
+
+            // For locus traversals where we're downsampling to coverage by sample, assume that the downsamplers
+            // will be invoked downstream from us in LocusIteratorByState. This improves performance by avoiding
+            // splitting/re-assembly of the read stream at this stage, and also allows for partial downsampling
+            // of individual reads.
+            boolean assumeDownstreamLIBSDownsampling = isLocusBasedTraversal &&
+                                                       readProperties.getDownsamplingMethod().type == DownsampleType.BY_SAMPLE &&
+                                                       readProperties.getDownsamplingMethod().toCoverage != null;
+
+            if ( ! assumeDownstreamLIBSDownsampling ) {
+                wrappedIterator = applyDownsamplingIterator(wrappedIterator);
+            }
+        }
+
+        // Use the old fractional downsampler only if we're using legacy downsampling:
+        // TODO: remove this statement (and associated classes) once the downsampling engine fork collapses
+        if ( readProperties.getDownsamplingMethod().useLegacyDownsampler && downsamplingFraction != null )
+            wrappedIterator = new LegacyDownsampleIterator(wrappedIterator, downsamplingFraction);
 
         // unless they've said not to validate read ordering (!noValidationOfReadOrder) and we've enabled verification,
         // verify the read ordering by applying a sort order iterator
         if (!noValidationOfReadOrder && enableVerification)
-            wrappedIterator = new VerifyingSamIterator(genomeLocParser,wrappedIterator);
-
-        wrappedIterator = StingSAMIteratorAdapter.adapt(new CountingFilteringIterator(readMetrics,wrappedIterator,supplementalFilters));
+            wrappedIterator = new VerifyingSamIterator(wrappedIterator);
 
         if (useOriginalBaseQualities || defaultBaseQualities >= 0)
             // only wrap if we are replacing the original qualities or using a default base quality
             wrappedIterator = new ReadFormattingIterator(wrappedIterator, useOriginalBaseQualities, defaultBaseQualities);
 
-        if (bqsrApplier != null)
-            wrappedIterator = new BQSRSamIterator(wrappedIterator, bqsrApplier);
-
-        if (cmode != BAQ.CalculationMode.OFF)
-            wrappedIterator = new BAQSamIterator(refReader, wrappedIterator, cmode, qmode);
+        // set up read transformers
+        for ( final ReadTransformer readTransformer : readTransformers ) {
+            if ( readTransformer.enabled() && readTransformer.getApplicationTime() == ReadTransformer.ApplicationTime.ON_INPUT )
+                wrappedIterator = new ReadTransformingIterator(wrappedIterator, readTransformer);
+        }
 
         return wrappedIterator;
     }
+
+    protected StingSAMIterator applyDownsamplingIterator( StingSAMIterator wrappedIterator ) {
+        if ( readProperties.getDownsamplingMethod() == null ||
+             readProperties.getDownsamplingMethod().type == DownsampleType.NONE ) {
+            return wrappedIterator;
+        }
+
+        if ( readProperties.getDownsamplingMethod().toFraction != null ) {
+
+            // If we're downsampling to a fraction of reads, there's no point in paying the cost of
+            // splitting/re-assembling the read stream by sample to run the FractionalDownsampler on
+            // reads from each sample separately, since the result would be the same as running the
+            // FractionalDownsampler on the entire stream. So, ALWAYS use the DownsamplingReadsIterator
+            // rather than the PerSampleDownsamplingReadsIterator, even if BY_SAMPLE downsampling
+            // was requested.
+
+            return new DownsamplingReadsIterator(wrappedIterator,
+                                                 new FractionalDownsampler<SAMRecord>(readProperties.getDownsamplingMethod().toFraction));
+        }
+        else if ( readProperties.getDownsamplingMethod().toCoverage != null ) {
+
+            // If we're downsampling to coverage, we DO need to pay the cost of splitting/re-assembling
+            // the read stream to run the downsampler on the reads for each individual sample separately if
+            // BY_SAMPLE downsampling was requested.
+
+            if ( readProperties.getDownsamplingMethod().type == DownsampleType.BY_SAMPLE ) {
+                return new PerSampleDownsamplingReadsIterator(wrappedIterator,
+                                                              new SimplePositionalDownsamplerFactory<SAMRecord>(readProperties.getDownsamplingMethod().toCoverage));
+            }
+            else if ( readProperties.getDownsamplingMethod().type == DownsampleType.ALL_READS ) {
+                return new DownsamplingReadsIterator(wrappedIterator,
+                                                     new SimplePositionalDownsampler<SAMRecord>(readProperties.getDownsamplingMethod().toCoverage));
+            }
+        }
+
+        return wrappedIterator;
+    }
+
 
     private class SAMResourcePool {
         /**
@@ -748,7 +850,7 @@ public class SAMDataSource {
         private synchronized void createNewResource() {
             if(allResources.size() > maxEntries)
                 throw new ReviewedStingException("Cannot create a new resource pool.  All resources are in use.");
-            SAMReaders readers = new SAMReaders(readerIDs, validationStringency);
+            SAMReaders readers = new SAMReaders(readerIDs, validationStringency, removeProgramRecords);
             allResources.add(readers);
             availableResources.add(readers);
         }
@@ -777,9 +879,11 @@ public class SAMDataSource {
         /**
          * Derive a new set of readers from the Reads metadata.
          * @param readerIDs reads to load.
+         * TODO: validationStringency is not used here
          * @param validationStringency validation stringency.
+         * @param removeProgramRecords indicate whether to clear program records from the readers
          */
-        public SAMReaders(Collection<SAMReaderID> readerIDs, SAMFileReader.ValidationStringency validationStringency) {
+        public SAMReaders(Collection<SAMReaderID> readerIDs, SAMFileReader.ValidationStringency validationStringency, boolean removeProgramRecords) {
             final int totalNumberOfFiles = readerIDs.size();
             int readerNumber = 1;
             final SimpleTimer timer = new SimpleTimer().start();
@@ -790,6 +894,9 @@ public class SAMDataSource {
             long lastTick = timer.currentTime();
             for(final SAMReaderID readerID: readerIDs) {
                 final ReaderInitializer init = new ReaderInitializer(readerID).call();
+                if (removeProgramRecords) {
+                    init.reader.getFileHeader().setProgramRecords(new ArrayList<SAMProgramRecord>());
+                }
                 if (threadAllocation.getNumIOThreads() > 0) {
                     inputStreams.put(init.readerID, init.blockInputStream); // get from initializer
                 }
@@ -932,6 +1039,12 @@ public class SAMDataSource {
             } catch ( RuntimeIOException e ) {
                 throw new UserException.CouldNotReadInputFile(readerID.samFile, e);
             } catch ( SAMFormatException e ) {
+                throw new UserException.MalformedBAM(readerID.samFile, e.getMessage());
+            }
+            // Picard is throwing a RuntimeException here when BAMs are malformed with bad headers (and so look like SAM files).
+            // Let's keep this separate from the SAMFormatException (which ultimately derives from RuntimeException) case,
+            // just in case we want to change this behavior later.
+            catch ( RuntimeException e ) {
                 throw new UserException.MalformedBAM(readerID.samFile, e.getMessage());
             }
             reader.setSAMRecordFactory(factory);

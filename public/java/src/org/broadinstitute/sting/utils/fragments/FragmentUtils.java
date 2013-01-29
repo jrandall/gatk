@@ -4,7 +4,7 @@ import net.sf.samtools.Cigar;
 import net.sf.samtools.CigarElement;
 import net.sf.samtools.CigarOperator;
 import net.sf.samtools.SAMRecord;
-import org.broadinstitute.sting.gatk.walkers.bqsr.EventType;
+import org.broadinstitute.sting.utils.recalibration.EventType;
 import org.broadinstitute.sting.utils.collections.Pair;
 import org.broadinstitute.sting.utils.exceptions.ReviewedStingException;
 import org.broadinstitute.sting.utils.pileup.PileupElement;
@@ -128,17 +128,18 @@ public class FragmentUtils {
         return create(reads, reads.size(), SamRecordGetter);
     }
 
-    public final static List<GATKSAMRecord> mergeOverlappingPairedFragments( List<GATKSAMRecord> overlappingPair ) {
+    public final static List<GATKSAMRecord> mergeOverlappingPairedFragments( final List<GATKSAMRecord> overlappingPair ) {
         final byte MIN_QUAL_BAD_OVERLAP = 16;
         if( overlappingPair.size() != 2 ) { throw new ReviewedStingException("Found overlapping pair with " + overlappingPair.size() + " reads, but expecting exactly 2."); }
 
         GATKSAMRecord firstRead = overlappingPair.get(0);
         GATKSAMRecord secondRead = overlappingPair.get(1);
-        if( !(secondRead.getUnclippedStart() <= firstRead.getUnclippedEnd() && secondRead.getUnclippedStart() >= firstRead.getUnclippedStart() && secondRead.getUnclippedEnd() >= firstRead.getUnclippedEnd()) ) {
+
+        if( !(secondRead.getSoftStart() <= firstRead.getSoftEnd() && secondRead.getSoftStart() >= firstRead.getSoftStart() && secondRead.getSoftEnd() >= firstRead.getSoftEnd()) ) {
             firstRead = overlappingPair.get(1); // swap them
             secondRead = overlappingPair.get(0);
         }
-        if( !(secondRead.getUnclippedStart() <= firstRead.getUnclippedEnd() && secondRead.getUnclippedStart() >= firstRead.getUnclippedStart() && secondRead.getUnclippedEnd() >= firstRead.getUnclippedEnd()) ) {
+        if( !(secondRead.getSoftStart() <= firstRead.getSoftEnd() && secondRead.getSoftStart() >= firstRead.getSoftStart() && secondRead.getSoftEnd() >= firstRead.getSoftEnd()) ) {
             return overlappingPair; // can't merge them, yet:  AAAAAAAAAAA-BBBBBBBBBBB-AAAAAAAAAAAAAA, B is contained entirely inside A
         }
         if( firstRead.getCigarString().contains("I") || firstRead.getCigarString().contains("D") || secondRead.getCigarString().contains("I") || secondRead.getCigarString().contains("D") ) {
@@ -164,7 +165,7 @@ public class FragmentUtils {
         }
         for(int iii = firstReadStop; iii < firstRead.getReadLength(); iii++) {
             if( firstReadQuals[iii] > MIN_QUAL_BAD_OVERLAP && secondReadQuals[iii-firstReadStop] > MIN_QUAL_BAD_OVERLAP && firstReadBases[iii] != secondReadBases[iii-firstReadStop] ) {
-                return overlappingPair;// high qual bases don't match exactly, probably indel in only one of the fragments, so don't merge them
+                return overlappingPair; // high qual bases don't match exactly, probably indel in only one of the fragments, so don't merge them
             }
             if( firstReadQuals[iii] < MIN_QUAL_BAD_OVERLAP && secondReadQuals[iii-firstReadStop] < MIN_QUAL_BAD_OVERLAP ) {
                 return overlappingPair; // both reads have low qual bases in the overlap region so don't merge them because don't know what is going on
@@ -178,7 +179,7 @@ public class FragmentUtils {
         }
 
         final GATKSAMRecord returnRead = new GATKSAMRecord( firstRead.getHeader() );
-        returnRead.setAlignmentStart( firstRead.getUnclippedStart() );
+        returnRead.setAlignmentStart( firstRead.getSoftStart() );
         returnRead.setReadBases( bases );
         returnRead.setBaseQualities( quals );
         returnRead.setReadGroup( firstRead.getReadGroup() );
