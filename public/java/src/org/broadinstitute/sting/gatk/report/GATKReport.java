@@ -89,9 +89,9 @@ public class GATKReport {
             reader = new BufferedReader(new FileReader(file));
             reportHeader = reader.readLine();
         } catch (FileNotFoundException e) {
-            throw new ReviewedStingException("Could not open file : " + file);
+            throw new UserException.CouldNotReadInputFile(file, "it does not exist");
         } catch (IOException e) { 
-            throw new ReviewedStingException("Could not read file : " + file);                            
+            throw new UserException.CouldNotReadInputFile(file, e);
         }   
 
 
@@ -271,7 +271,18 @@ public class GATKReport {
      * @return a simplified GATK report
      */
     public static GATKReport newSimpleReport(final String tableName, final String... columns) {
-        GATKReportTable table = new GATKReportTable(tableName, "A simplified GATK table report", columns.length);
+        return newSimpleReportWithDescription(tableName, "A simplified GATK table report", columns);
+    }
+
+    /**
+     * @see #newSimpleReport(String, String...) but with a customized description
+     * @param tableName
+     * @param desc
+     * @param columns
+     * @return
+     */
+    public static GATKReport newSimpleReportWithDescription(final String tableName, final String desc, final String... columns) {
+        GATKReportTable table = new GATKReportTable(tableName, desc, columns.length);
 
         for (String column : columns) {
             table.addColumn(column, "");
@@ -332,7 +343,7 @@ public class GATKReport {
 
         GATKReportTable table = tables.firstEntry().getValue();
         if ( table.getNumColumns() != values.length )
-            throw new ReviewedStingException("The number of arguments in writeRow() must match the number of columns in the table");
+            throw new ReviewedStingException("The number of arguments in writeRow (" + values.length + ") must match the number of columns in the table (" + table.getNumColumns() + ")" );
 
         final int rowIndex = table.getNumRows();
         for ( int i = 0; i < values.length; i++ )

@@ -2,8 +2,6 @@ package org.broadinstitute.sting.utils.codecs.vcf;
 
 import org.broad.tribble.TribbleException;
 import org.broad.tribble.readers.LineReader;
-import org.broad.tribble.util.ParsingUtils;
-import org.broadinstitute.sting.utils.variantcontext.*;
 
 import java.io.IOException;
 import java.util.*;
@@ -50,13 +48,6 @@ public class VCFCodec extends AbstractVCFCodec {
     public final static String VCF4_MAGIC_HEADER = "##fileformat=VCFv4";
 
     /**
-     * A VCF header the contains master info/filter/format records that we use to 'fill in'
-     * any missing records from our input VCF header.  This allows us to repair headers on
-     * the fly
-     */
-    private VCFHeader headerForRepairs = null;
-
-    /**
      * @param reader the line reader to take header lines from
      * @return the number of header lines
      */
@@ -88,8 +79,6 @@ public class VCFCodec extends AbstractVCFCodec {
                     }
                     headerStrings.add(line);
                     super.parseHeaderFromLines(headerStrings, version);
-                    if ( headerForRepairs != null )
-                        this.header = repairHeader(this.header, headerForRepairs);
                     return this.header;
                 }
                 else {
@@ -102,24 +91,6 @@ public class VCFCodec extends AbstractVCFCodec {
         }
         throw new TribbleException.InvalidHeader("We never saw the required CHROM header line (starting with one #) for the input VCF file");
     }
-
-    private final VCFHeader repairHeader(final VCFHeader readHeader, final VCFHeader masterHeader) {
-        final Set<VCFHeaderLine> lines = VCFUtils.smartMergeHeaders(Arrays.asList(readHeader, masterHeader), log);
-        return new VCFHeader(lines, readHeader.getGenotypeSamples());
-    }
-
-    /**
-     * Tells this VCFCodec to repair the incoming header files with the information in masterHeader
-     *
-     * @param headerForRepairs
-     */
-    public void setHeaderForRepairs(final VCFHeader headerForRepairs) {
-        if ( headerForRepairs != null )
-            log.info("Using master VCF header to repair missing files from incoming VCFs");
-        this.headerForRepairs = headerForRepairs;
-    }
-
-
 
     /**
      * parse the filter string, first checking to see if we already have parsed it in a previous attempt
@@ -146,7 +117,7 @@ public class VCFCodec extends AbstractVCFCodec {
         // empty set for passes filters
         List<String> fFields = new LinkedList<String>();
         // otherwise we have to parse and cache the value
-        if ( filterString.indexOf(VCFConstants.FILTER_CODE_SEPARATOR) == -1 )
+        if ( !filterString.contains(VCFConstants.FILTER_CODE_SEPARATOR) )
             fFields.add(filterString);
         else
             fFields.addAll(Arrays.asList(filterString.split(VCFConstants.FILTER_CODE_SEPARATOR)));

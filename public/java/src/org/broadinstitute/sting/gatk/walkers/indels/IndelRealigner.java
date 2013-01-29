@@ -25,7 +25,7 @@
 
 package org.broadinstitute.sting.gatk.walkers.indels;
 
-import net.sf.picard.reference.IndexedFastaSequenceFile;
+import com.google.java.contract.Requires;
 import net.sf.samtools.*;
 import net.sf.samtools.util.RuntimeIOException;
 import net.sf.samtools.util.SequenceUtil;
@@ -36,8 +36,8 @@ import org.broadinstitute.sting.gatk.CommandLineGATK;
 import org.broadinstitute.sting.gatk.GenomeAnalysisEngine;
 import org.broadinstitute.sting.gatk.contexts.ReferenceContext;
 import org.broadinstitute.sting.gatk.io.StingSAMFileWriter;
-import org.broadinstitute.sting.gatk.refdata.ReadMetaDataTracker;
-import org.broadinstitute.sting.gatk.refdata.utils.GATKFeature;
+import org.broadinstitute.sting.gatk.iterators.ReadTransformer;
+import org.broadinstitute.sting.gatk.refdata.RefMetaDataTracker;
 import org.broadinstitute.sting.gatk.walkers.BAQMode;
 import org.broadinstitute.sting.gatk.walkers.ReadWalker;
 import org.broadinstitute.sting.utils.*;
@@ -112,7 +112,7 @@ import java.util.*;
  * @author ebanks
  */
 @DocumentedGATKFeature( groupName = "BAM Processing and Analysis Tools", extraDocs = {CommandLineGATK.class} )
-@BAQMode(QualityMode = BAQ.QualityMode.ADD_TAG, ApplicationTime = BAQ.ApplicationTime.ON_OUTPUT)
+@BAQMode(QualityMode = BAQ.QualityMode.ADD_TAG, ApplicationTime = ReadTransformer.ApplicationTime.ON_OUTPUT)
 public class IndelRealigner extends ReadWalker<Integer, Integer> {
 
     public static final String ORIGINAL_CIGAR_TAG = "OC";
@@ -236,6 +236,8 @@ public class IndelRealigner extends ReadWalker<Integer, Integer> {
      * then extensions (".bam" or ".sam") will be stripped from the input file names and the provided string value will be pasted on instead; 2) if the
      * value ends with a '.map' (e.g. input_output.map), then the two-column tab-separated file with the specified name must exist and list unique output
      * file name (2nd column) for each input file name (1st column).
+     *
+     * Note that some GATK arguments do NOT work in conjunction with nWayOut (e.g. --disable_bam_indexing).
      */
     @Argument(fullName="nWayOut", shortName="nWayOut", required=false, doc="Generate one output file for each input (-I) bam file")
     protected String N_WAY_OUT = null;
@@ -274,7 +276,7 @@ public class IndelRealigner extends ReadWalker<Integer, Integer> {
     protected String OUT_SNPS = null;
 
     // fasta reference reader to supplement the edges of the reference sequence
-    private IndexedFastaSequenceFile referenceReader;
+    private CachingIndexedFastaSequenceFile referenceReader;
 
     // the intervals input by the user
     private Iterator<GenomeLoc> intervals = null;
@@ -370,8 +372,6 @@ public class IndelRealigner extends ReadWalker<Integer, Integer> {
 
         currentInterval = intervals.hasNext() ? intervals.next() : null;
 
-        writerToUse = writer;
-
         if ( N_WAY_OUT != null ) {
             boolean createIndex =  true;
 
@@ -383,9 +383,9 @@ public class IndelRealigner extends ReadWalker<Integer, Integer> {
                         createIndex, generateMD5s,createProgramRecord(),KEEP_ALL_PG_RECORDS);
             }
         }   else {
-
             // set up the output writer
             setupWriter(getToolkit().getSAMFileHeader());
+            writerToUse = writer;
         }
         manager = new ConstrainedMateFixingManager(writerToUse, getToolkit().getGenomeLocParser(), MAX_ISIZE_FOR_MOVEMENT, MAX_POS_MOVE_ALLOWED, MAX_RECORDS_IN_MEMORY);
 
@@ -473,7 +473,7 @@ public class IndelRealigner extends ReadWalker<Integer, Integer> {
         readsActuallyCleaned.clear();
     }
 
-    public Integer map(ReferenceContext ref, GATKSAMRecord read, ReadMetaDataTracker metaDataTracker) {
+    public Integer map(ReferenceContext ref, GATKSAMRecord read, RefMetaDataTracker metaDataTracker) {
         if ( currentInterval == null ) {
             emit(read);
             return 0;
@@ -540,7 +540,7 @@ public class IndelRealigner extends ReadWalker<Integer, Integer> {
         // TODO -- it would be nice if we could use indels from 454/Ion reads as alternate consenses
     }
 
-    private void cleanAndCallMap(ReferenceContext ref, GATKSAMRecord read, ReadMetaDataTracker metaDataTracker, GenomeLoc readLoc) {
+    private void cleanAndCallMap(ReferenceContext ref, GATKSAMRecord read, RefMetaDataTracker metaDataTracker, GenomeLoc readLoc) {
         if ( readsToClean.size() > 0 ) {
             GenomeLoc earliestPossibleMove = getToolkit().getGenomeLocParser().createGenomeLoc(readsToClean.getReads().get(0));
             if ( manager.canMoveReads(earliestPossibleMove) )
@@ -619,17 +619,12 @@ public class IndelRealigner extends ReadWalker<Integer, Integer> {
         }
     }
 
-    private void populateKnownIndels(ReadMetaDataTracker metaDataTracker, ReferenceContext ref) {
-        for ( Collection<GATKFeature> rods : metaDataTracker.getContigOffsetMapping().values() ) {
-            Iterator<GATKFeature> rodIter = rods.iterator();
-            while ( rodIter.hasNext() ) {
-                Object rod = rodIter.next().getUnderlyingObject();
-                if ( indelRodsSeen.contains(rod) )
-                    continue;
-                indelRodsSeen.add(rod);
-                if ( rod instanceof VariantContext )
-                    knownIndelsToTry.add((VariantContext)rod);
-            }
+    private void populateKnownIndels(RefMetaDataTracker metaDataTracker, ReferenceContext ref) {
+        for ( final VariantContext vc : metaDataTracker.getValues(known) ) {
+            if ( indelRodsSeen.contains(vc) )
+                continue;
+            indelRodsSeen.add(vc);
+            knownIndelsToTry.add(vc);
         }
     }
 
@@ -872,7 +867,13 @@ public class IndelRealigner extends ReadWalker<Integer, Integer> {
         for ( VariantContext knownIndel : knownIndelsToTry ) {
             if ( knownIndel == null || !knownIndel.isIndel() || knownIndel.isComplexIndel() )
                 continue;
-            byte[] indelStr = knownIndel.isSimpleInsertion() ? knownIndel.getAlternateAllele(0).getBases() : Utils.dupBytes((byte)'-', knownIndel.getReference().length());
+            final byte[] indelStr;
+            if ( knownIndel.isSimpleInsertion() ) {
+                final byte[] fullAllele = knownIndel.getAlternateAllele(0).getBases();
+                indelStr = Arrays.copyOfRange(fullAllele, 1, fullAllele.length); // remove ref padding
+            } else {
+                indelStr = Utils.dupBytes((byte)'-', knownIndel.getReference().length() - 1);
+            }
             int start = knownIndel.getStart() - leftmostIndex + 1;
             Consensus c = createAlternateConsensus(start, reference, indelStr, knownIndel);
             if ( c != null )
@@ -1019,7 +1020,9 @@ public class IndelRealigner extends ReadWalker<Integer, Integer> {
                 elements.add(ce);
                 break;
             case M:
-                altIdx += elementLength;
+            case EQ:
+            case X:
+                    altIdx += elementLength;
             case N:
                 if ( reference.length < refIdx + elementLength )
                     ok_flag = false;
@@ -1281,6 +1284,8 @@ public class IndelRealigner extends ReadWalker<Integer, Integer> {
                 int elementLength = ce.getLength();
                 switch ( ce.getOperator() ) {
                     case M:
+                    case EQ:
+                    case X:
                         for (int k = 0 ; k < elementLength ; k++, refIdx++, altIdx++ ) {
                             if ( refIdx >= reference.length )
                                 break;
@@ -1426,6 +1431,8 @@ public class IndelRealigner extends ReadWalker<Integer, Integer> {
                         fromIndex += elementLength;
                         break;
                     case M:
+                    case EQ:
+                    case X:
                     case I:
                         System.arraycopy(actualReadBases, fromIndex, readBases, toIndex, elementLength);
                         System.arraycopy(actualBaseQuals, fromIndex, baseQuals, toIndex, elementLength);
@@ -1596,7 +1603,8 @@ public class IndelRealigner extends ReadWalker<Integer, Integer> {
 
         public List<GATKSAMRecord> getReads() { return reads; }
 
-        public byte[] getReference(IndexedFastaSequenceFile referenceReader) {
+        @Requires("referenceReader.isUppercasingBases()")
+        public byte[] getReference(CachingIndexedFastaSequenceFile referenceReader) {
             // set up the reference if we haven't done so yet
             if ( reference == null ) {
                 // first, pad the reference to handle deletions in narrow windows (e.g. those with only 1 read)
@@ -1604,7 +1612,6 @@ public class IndelRealigner extends ReadWalker<Integer, Integer> {
                 int padRight = Math.min(loc.getStop()+REFERENCE_PADDING, referenceReader.getSequenceDictionary().getSequence(loc.getContig()).getSequenceLength());
                 loc = getToolkit().getGenomeLocParser().createGenomeLoc(loc.getContig(), padLeft, padRight);
                 reference = referenceReader.getSubsequenceAt(loc.getContig(), loc.getStart(), loc.getStop()).getBases();
-                StringUtil.toUpperCase(reference);
             }
 
             return reference;

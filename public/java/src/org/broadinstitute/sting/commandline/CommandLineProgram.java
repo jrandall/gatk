@@ -32,6 +32,7 @@ import org.apache.log4j.PatternLayout;
 import org.broadinstitute.sting.gatk.CommandLineGATK;
 import org.broadinstitute.sting.utils.exceptions.ReviewedStingException;
 import org.broadinstitute.sting.utils.help.ApplicationDetails;
+import org.broadinstitute.sting.utils.help.HelpConstants;
 import org.broadinstitute.sting.utils.help.HelpFormatter;
 
 import java.io.IOException;
@@ -174,7 +175,7 @@ public abstract class CommandLineProgram {
             ParsingEngine parser = clp.parser = new ParsingEngine(clp);
             parser.addArgumentSource(clp.getClass());
 
-            Map<ArgumentMatchSource, List<String>> parsedArgs;
+            Map<ArgumentMatchSource, ParsedArgs> parsedArgs;
 
             // process the args
             if (clp.canAddArgumentsDynamically()) {
@@ -288,7 +289,7 @@ public abstract class CommandLineProgram {
      */
     private static void printDocumentationReference() {
         errorPrintf("Visit our website and forum for extensive documentation and answers to %n");
-        errorPrintf("commonly asked questions http://www.broadinstitute.org/gatk%n");
+        errorPrintf("commonly asked questions " + HelpConstants.BASE_GATK_URL + "%n");
     }
 
 

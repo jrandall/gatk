@@ -36,7 +36,7 @@ import java.util.*;
  * <ul>
  *     <li>In parent/child pairs: If an individual genotype is missing at one site, the other one is phased if it is homozygous. No phasing probability is emitted.</li>
  *     <li>In trios: If the child is missing, parents are treated as separate individuals and phased if homozygous. No phasing probability is emitted.</li>
- *     <li>In trios: If one of the parents is missing, it is handled like a parent/child pair. Phasing is done unless both the parent and child are heterozygous and a phasing probabilitt is emitted.</li>
+ *     <li>In trios: If one of the parents is missing, it is handled like a parent/child pair. Phasing is done unless both the parent and child are heterozygous and a phasing probability is emitted.</li>
  *     <li>In trios: If two individuals are missing, the remaining individual is phased if it is homozygous. No phasing probability is emitted.</li>
  * </ul>
  *
@@ -426,10 +426,10 @@ public class PhaseByTransmission extends RodWalker<HashMap<Byte,Integer>, HashMa
         Map<String,Set<Sample>> families = this.getSampleDB().getFamilies();
         Set<Sample> family;
         ArrayList<Sample> parents;
-        for(String familyID : families.keySet()){
-            family = families.get(familyID);
+        for(Map.Entry<String,Set<Sample>> familyEntry : families.entrySet()){
+            family = familyEntry.getValue();
             if(family.size()<2 || family.size()>3){
-                logger.info(String.format("Caution: Family %s has %d members; At the moment Phase By Transmission only supports trios and parent/child pairs. Family skipped.",familyID,family.size()));
+                logger.info(String.format("Caution: Family %s has %d members; At the moment Phase By Transmission only supports trios and parent/child pairs. Family skipped.",familyEntry.getKey(),family.size()));
             }
             else{
                 for(Sample familyMember : family){
@@ -438,7 +438,7 @@ public class PhaseByTransmission extends RodWalker<HashMap<Byte,Integer>, HashMa
                         if(family.containsAll(parents))
                             this.trios.add(familyMember);
                         else
-                            logger.info(String.format("Caution: Family %s skipped as it is not a trio nor a parent/child pair; At the moment Phase By Transmission only supports trios and parent/child pairs. Family skipped.",familyID));
+                            logger.info(String.format("Caution: Family %s skipped as it is not a trio nor a parent/child pair; At the moment Phase By Transmission only supports trios and parent/child pairs. Family skipped.",familyEntry.getKey()));
                         break;
                     }
                 }
@@ -541,7 +541,7 @@ public class PhaseByTransmission extends RodWalker<HashMap<Byte,Integer>, HashMa
     //Get a Map of genotype likelihoods.
     //In case of null, unavailable or no call, all likelihoods are 1/3.
     private EnumMap<GenotypeType,Double> getLikelihoodsAsMapSafeNull(Genotype genotype){
-        if(genotype == null || !genotype.isCalled()){
+        if(genotype == null || !genotype.isCalled() || genotype.getLikelihoods() == null){
             EnumMap<GenotypeType,Double> likelihoods = new EnumMap<GenotypeType, Double>(GenotypeType.class);
             likelihoods.put(GenotypeType.HOM_REF,1.0/3.0);
             likelihoods.put(GenotypeType.HET,1.0/3.0);
@@ -811,9 +811,9 @@ public class PhaseByTransmission extends RodWalker<HashMap<Byte,Integer>, HashMa
                     updateTrioMetricsCounters(phasedMother,phasedFather,phasedChild,mvCount,metricsCounters);
                     mvfLine = String.format("%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s",
                             vc.getChr(),vc.getStart(),vc.getAttribute(VCFConstants.ALLELE_COUNT_KEY),sample.getFamilyID(),
-                            phasedMother.getExtendedAttribute(TRANSMISSION_PROBABILITY_TAG_NAME),phasedMother.getGenotypeString(),phasedMother.getDP(),Arrays.asList(phasedMother.getAD()),
-                            phasedMother.getLikelihoodsString(), phasedFather.getGenotypeString(),phasedFather.getDP(),Arrays.asList(phasedFather.getAD()),phasedFather.getLikelihoodsString(),
-                            phasedChild.getGenotypeString(),Arrays.asList(phasedChild.getDP()),phasedChild.getAD(),phasedChild.getLikelihoodsString());
+                            phasedMother.getExtendedAttribute(TRANSMISSION_PROBABILITY_TAG_NAME),phasedMother.getGenotypeString(),phasedMother.getDP(),printAD(phasedMother.getAD()),
+                            phasedMother.getLikelihoodsString(), phasedFather.getGenotypeString(),phasedFather.getDP(),printAD(phasedFather.getAD()),phasedFather.getLikelihoodsString(),
+                            phasedChild.getGenotypeString(),phasedChild.getDP(),printAD(phasedChild.getAD()),phasedChild.getLikelihoodsString());
                     if(!(phasedMother.getType()==mother.getType() && phasedFather.getType()==father.getType() && phasedChild.getType()==child.getType()))
                         metricsCounters.put(NUM_GENOTYPES_MODIFIED,metricsCounters.get(NUM_GENOTYPES_MODIFIED)+1);
                 }
@@ -823,8 +823,8 @@ public class PhaseByTransmission extends RodWalker<HashMap<Byte,Integer>, HashMa
                         metricsCounters.put(NUM_GENOTYPES_MODIFIED,metricsCounters.get(NUM_GENOTYPES_MODIFIED)+1);
                     mvfLine = String.format("%s\t%d\t%s\t%s\t%s\t%s:%s:%s:%s\t.\t.\t.\t.\t%s\t%s\t%s\t%s",
                             vc.getChr(),vc.getStart(),vc.getAttribute(VCFConstants.ALLELE_COUNT_KEY),sample.getFamilyID(),
-                            phasedMother.getExtendedAttribute(TRANSMISSION_PROBABILITY_TAG_NAME),phasedMother.getGenotypeString(),phasedMother.getDP(),Arrays.asList(phasedMother.getAD()),phasedMother.getLikelihoodsString(),
-                            phasedChild.getGenotypeString(),phasedChild.getDP(),Arrays.asList(phasedChild.getAD()),phasedChild.getLikelihoodsString());
+                            phasedMother.getExtendedAttribute(TRANSMISSION_PROBABILITY_TAG_NAME),phasedMother.getGenotypeString(),phasedMother.getDP(),printAD(phasedMother.getAD()),phasedMother.getLikelihoodsString(),
+                            phasedChild.getGenotypeString(),phasedChild.getDP(),printAD(phasedChild.getAD()),phasedChild.getLikelihoodsString());
                 }
             }
             else{
@@ -834,8 +834,8 @@ public class PhaseByTransmission extends RodWalker<HashMap<Byte,Integer>, HashMa
                     metricsCounters.put(NUM_GENOTYPES_MODIFIED,metricsCounters.get(NUM_GENOTYPES_MODIFIED)+1);
                 mvfLine =   String.format("%s\t%d\t%s\t%s\t%s\t.\t.\t.\t.\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s",
                         vc.getChr(),vc.getStart(),vc.getAttribute(VCFConstants.ALLELE_COUNT_KEY),sample.getFamilyID(),
-                        phasedFather.getExtendedAttribute(TRANSMISSION_PROBABILITY_TAG_NAME),phasedFather.getGenotypeString(),phasedFather.getDP(),Arrays.asList(phasedFather.getAD()),phasedFather.getLikelihoodsString(),
-                        phasedChild.getGenotypeString(),phasedChild.getDP(),Arrays.asList(phasedChild.getAD()),phasedChild.getLikelihoodsString());
+                        phasedFather.getExtendedAttribute(TRANSMISSION_PROBABILITY_TAG_NAME),phasedFather.getGenotypeString(),phasedFather.getDP(),printAD(phasedFather.getAD()),phasedFather.getLikelihoodsString(),
+                        phasedChild.getGenotypeString(),phasedChild.getDP(),printAD(phasedChild.getAD()),phasedChild.getLikelihoodsString());
             }
 
             //Report violation if set so
@@ -848,6 +848,18 @@ public class PhaseByTransmission extends RodWalker<HashMap<Byte,Integer>, HashMa
         vcfWriter.add(builder.make());
 
         return metricsCounters;
+    }
+
+    private static String printAD(final int[] AD) {
+        if ( AD == null || AD.length == 0 )
+            return ".";
+        final StringBuilder sb = new StringBuilder();
+        sb.append(AD[0]);
+        for ( int i = 1; i < AD.length; i++) {
+            sb.append(",");
+            sb.append(AD[i]);
+        }
+        return sb.toString();
     }
 
     /**

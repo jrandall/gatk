@@ -32,7 +32,6 @@ import net.sf.samtools.util.StringUtil;
 import org.apache.log4j.Logger;
 import org.broadinstitute.sting.gatk.GenomeAnalysisEngine;
 import org.broadinstitute.sting.gatk.io.StingSAMFileWriter;
-import org.broadinstitute.sting.utils.collections.Pair;
 import org.broadinstitute.sting.utils.text.TextFormattingUtils;
 
 import java.net.InetAddress;
@@ -237,6 +236,33 @@ public class Utils {
         }
     }
 
+    public static <T> List<T> append(final List<T> left, T ... elts) {
+        final List<T> l = new LinkedList<T>(left);
+        l.addAll(Arrays.asList(elts));
+        return l;
+    }
+
+    /**
+     * Returns a string of the values in joined by separator, such as A,B,C
+     *
+     * @param separator
+     * @param doubles
+     * @return
+     */
+    public static String join(String separator, double[] doubles) {
+        if ( doubles == null || doubles.length == 0)
+            return "";
+        else {
+            StringBuilder ret = new StringBuilder();
+            ret.append(doubles[0]);
+            for (int i = 1; i < doubles.length; ++i) {
+                ret.append(separator);
+                ret.append(doubles[i]);
+            }
+            return ret.toString();
+        }
+    }
+
     /**
      * Returns a string of the form elt1.toString() [sep elt2.toString() ... sep elt.toString()] for a collection of
      * elti objects (note there's no actual space between sep and the elti elements).  Returns
@@ -265,6 +291,10 @@ public class Utils {
                 return ret.toString();
             }
         }
+    }
+
+    public static <T> String join(final String separator, final T ... objects) {
+        return join(separator, Arrays.asList(objects));
     }
 
     public static String dupString(char c, int nCopies) {
@@ -564,7 +594,6 @@ public class Utils {
         List<T> t = new ArrayList<T>(c.keySet());
         Collections.sort(t);
 
-        List<V> l = new ArrayList<V>();
         List<String> pairs = new ArrayList<String>();
         for ( T k : t ) {
             pairs.add(k + "=" + c.get(k));
@@ -662,23 +691,71 @@ public class Utils {
             array[i] = value;
     }
 
-    public static void setupWriter(StingSAMFileWriter writer, GenomeAnalysisEngine toolkit, boolean preSorted, boolean KEEP_ALL_PG_RECORDS, Object walker, String PROGRAM_RECORD_NAME) {
-        final SAMProgramRecord programRecord = createProgramRecord(toolkit, walker, PROGRAM_RECORD_NAME);
-
-        SAMFileHeader header = toolkit.getSAMFileHeader();
+    /**
+     * Creates a program record for the program, adds it to the list of program records (@PG tags) in the bam file and sets
+     * up the writer with the header and presorted status.
+     *
+     * @param toolkit             the engine
+     * @param originalHeader      original header
+     * @param KEEP_ALL_PG_RECORDS whether or not to keep all the other program records already existing in this BAM file
+     * @param programRecord       the program record for this program
+     */
+    public static SAMFileHeader setupWriter(GenomeAnalysisEngine toolkit, SAMFileHeader originalHeader, boolean KEEP_ALL_PG_RECORDS, SAMProgramRecord programRecord) {
+        SAMFileHeader header = originalHeader.clone();
         List<SAMProgramRecord> oldRecords = header.getProgramRecords();
         List<SAMProgramRecord> newRecords = new ArrayList<SAMProgramRecord>(oldRecords.size()+1);
         for ( SAMProgramRecord record : oldRecords )
-            if ( !record.getId().startsWith(PROGRAM_RECORD_NAME) || KEEP_ALL_PG_RECORDS )
+            if ( (programRecord != null && !record.getId().startsWith(programRecord.getId())) || KEEP_ALL_PG_RECORDS )
                 newRecords.add(record);
 
-        newRecords.add(programRecord);
-        header.setProgramRecords(newRecords);
+        if (programRecord != null) {
+            newRecords.add(programRecord);
+            header.setProgramRecords(newRecords);
+        }
+        return header;
+    }
 
+    /**
+    * Creates a program record for the program, adds it to the list of program records (@PG tags) in the bam file and returns
+    * the new header to be added to the BAM writer.
+    *
+    * @param toolkit             the engine
+    * @param KEEP_ALL_PG_RECORDS whether or not to keep all the other program records already existing in this BAM file
+    * @param walker              the walker object (so we can extract the command line)
+    * @param PROGRAM_RECORD_NAME the name for the PG tag
+    * @return a pre-filled header for the bam writer
+    */
+    public static SAMFileHeader setupWriter(GenomeAnalysisEngine toolkit, SAMFileHeader originalHeader, boolean KEEP_ALL_PG_RECORDS, Object walker, String PROGRAM_RECORD_NAME) {
+        final SAMProgramRecord programRecord = createProgramRecord(toolkit, walker, PROGRAM_RECORD_NAME);
+        return setupWriter(toolkit, originalHeader, KEEP_ALL_PG_RECORDS, programRecord);
+    }
+
+    /**
+     * Creates a program record for the program, adds it to the list of program records (@PG tags) in the bam file and sets
+     * up the writer with the header and presorted status.
+     *
+     * @param writer              BAM file writer
+     * @param toolkit             the engine
+     * @param preSorted           whether or not the writer can assume reads are going to be added are already sorted
+     * @param KEEP_ALL_PG_RECORDS whether or not to keep all the other program records already existing in this BAM file
+     * @param walker              the walker object (so we can extract the command line)
+     * @param PROGRAM_RECORD_NAME the name for the PG tag
+     */
+    public static void setupWriter(StingSAMFileWriter writer, GenomeAnalysisEngine toolkit, SAMFileHeader originalHeader, boolean preSorted, boolean KEEP_ALL_PG_RECORDS, Object walker, String PROGRAM_RECORD_NAME) {
+        SAMFileHeader header = setupWriter(toolkit, originalHeader, KEEP_ALL_PG_RECORDS, walker, PROGRAM_RECORD_NAME);
         writer.writeHeader(header);
         writer.setPresorted(preSorted);
     }
-    
+
+
+    /**
+     * Creates a program record (@PG) tag
+     *
+     * @param toolkit             the engine
+     * @param walker              the walker object (so we can extract the command line)
+     * @param PROGRAM_RECORD_NAME the name for the PG tag
+     * @return a program record for the tool
+     */
     public static SAMProgramRecord createProgramRecord(GenomeAnalysisEngine toolkit, Object walker, String PROGRAM_RECORD_NAME) {
         final SAMProgramRecord programRecord = new SAMProgramRecord(PROGRAM_RECORD_NAME);
         final ResourceBundle headerInfo = TextFormattingUtils.loadResourceBundle("StingText");
@@ -733,6 +810,40 @@ public class Utils {
     }
 
     /**
+     * Make all combinations of N size of objects
+     *
+     * if objects = [A, B, C]
+     * if N = 1 => [[A], [B], [C]]
+     * if N = 2 => [[A, A], [B, A], [C, A], [A, B], [B, B], [C, B], [A, C], [B, C], [C, C]]
+     *
+     * @param objects
+     * @param n
+     * @param <T>
+     * @param withReplacement if false, the resulting permutations will only contain unique objects from objects
+     * @return
+     */
+    public static <T> List<List<T>> makePermutations(final List<T> objects, final int n, final boolean withReplacement) {
+        final List<List<T>> combinations = new ArrayList<List<T>>();
+
+        if ( n <= 0 )
+            ;
+        else if ( n == 1 ) {
+            for ( final T o : objects )
+                combinations.add(Collections.singletonList(o));
+        } else {
+            final List<List<T>> sub = makePermutations(objects, n - 1, withReplacement);
+            for ( List<T> subI : sub ) {
+                for ( final T a : objects ) {
+                    if ( withReplacement || ! subI.contains(a) )
+                        combinations.add(Utils.cons(a, subI));
+                }
+            }
+        }
+
+        return combinations;
+    }
+
+    /**
      * Convenience function that formats the novelty rate as a %.2f string
      *
      * @param known number of variants from all that are known
@@ -776,6 +887,28 @@ public class Utils {
         for ( final T value : values )
             map.put(value, value);
         return Collections.unmodifiableMap(map);
+    }
+
+    /**
+     * Divides the input list into a list of sublists, which contains group size elements (except potentially the last one)
+     *
+     * list = [A, B, C, D, E]
+     * groupSize = 2
+     * result = [[A, B], [C, D], [E]]
+     *
+     * @param list
+     * @param groupSize
+     * @return
+     */
+    public static <T> List<List<T>> groupList(final List<T> list, final int groupSize) {
+        if ( groupSize < 1 ) throw new IllegalArgumentException("groupSize >= 1");
+
+        final List<List<T>> subLists = new LinkedList<List<T>>();
+        int n = list.size();
+        for ( int i = 0; i < n; i += groupSize ) {
+            subLists.add(list.subList(i, Math.min(i + groupSize, n)));
+        }
+        return subLists;
     }
 
 }

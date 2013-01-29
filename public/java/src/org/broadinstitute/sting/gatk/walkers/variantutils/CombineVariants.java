@@ -33,10 +33,10 @@ import org.broadinstitute.sting.gatk.io.stubs.VariantContextWriterStub;
 import org.broadinstitute.sting.gatk.refdata.RefMetaDataTracker;
 import org.broadinstitute.sting.gatk.walkers.Reference;
 import org.broadinstitute.sting.gatk.walkers.RodWalker;
+import org.broadinstitute.sting.gatk.walkers.TreeReducible;
 import org.broadinstitute.sting.gatk.walkers.Window;
 import org.broadinstitute.sting.gatk.walkers.annotator.ChromosomeCounts;
 import org.broadinstitute.sting.utils.SampleUtils;
-import org.broadinstitute.sting.utils.Utils;
 import org.broadinstitute.sting.utils.codecs.vcf.*;
 import org.broadinstitute.sting.utils.exceptions.UserException;
 import org.broadinstitute.sting.utils.help.DocumentedGATKFeature;
@@ -66,6 +66,19 @@ import java.util.*;
  * the records in common between two VCFs, you would first run CombineVariants on the two files to generate a single
  * VCF and then run SelectVariants to extract the common records with -select 'set == "Intersection"', as worked out
  * in the detailed example on the wiki.
+ *
+ * Note that CombineVariants supports multi-threaded parallelism (8/15/12).  This is particularly useful
+ * when converting from VCF to BCF2, which can be expensive.  In this case each thread spends CPU time
+ * doing the conversion, and the GATK engine is smart enough to merge the partial BCF2 blocks together
+ * efficiency.  However, since this merge runs in only one thread, you can quickly reach diminishing
+ * returns with the number of parallel threads.  -nt 4 works well but -nt 8 may be too much.
+ *
+ * Some fine details about the merging algorithm:
+ *   <ul>
+ *   <li> As of GATK 2.1, when merging multiple VCF records at a site, the combined VCF record has the QUAL of
+ *      the first VCF record with a non-MISSING QUAL value.  The previous behavior was to take the
+ *      max QUAL, which resulted in sometime strange downstream confusion</li>
+ *   </ul>
  *
  * <h2>Input</h2>
  * <p>
@@ -100,7 +113,7 @@ import java.util.*;
  */
 @DocumentedGATKFeature( groupName = "Variant Evaluation and Manipulation Tools", extraDocs = {CommandLineGATK.class} )
 @Reference(window=@Window(start=-50,stop=50))
-public class CombineVariants extends RodWalker<Integer, Integer> {
+public class CombineVariants extends RodWalker<Integer, Integer> implements TreeReducible<Integer> {
     /**
      * The VCF files to merge together
      *
@@ -121,7 +134,7 @@ public class CombineVariants extends RodWalker<Integer, Integer> {
     protected VariantContextWriter vcfWriter = null;
 
     @Argument(shortName="genotypeMergeOptions", doc="Determines how we should merge genotype records for samples shared across the ROD files", required=false)
-    public VariantContextUtils.GenotypeMergeType genotypeMergeOption = VariantContextUtils.GenotypeMergeType.PRIORITIZE;
+    public VariantContextUtils.GenotypeMergeType genotypeMergeOption = null;
 
     @Argument(shortName="filteredRecordsMergeType", doc="Determines how we should handle records seen at the same site in the VCF, but with different FILTER fields", required=false)
     public VariantContextUtils.FilteredRecordMergeType filteredRecordsMergeType = VariantContextUtils.FilteredRecordMergeType.KEEP_IF_ANY_UNFILTERED;
@@ -187,12 +200,13 @@ public class CombineVariants extends RodWalker<Integer, Integer> {
         } else
             logger.warn("VCF output file not an instance of VCFWriterStub; cannot enable sites only output option");
 
-        if ( PRIORITY_STRING == null ) {
-            PRIORITY_STRING = Utils.join(",", vcfRods.keySet());
-            logger.info("Priority string not provided, using arbitrary genotyping order: " + PRIORITY_STRING);
+        validateAnnotateUnionArguments();
+        if ( PRIORITY_STRING == null && genotypeMergeOption == null) {
+            genotypeMergeOption = VariantContextUtils.GenotypeMergeType.UNSORTED;
+            //PRIORITY_STRING = Utils.join(",", vcfRods.keySet());  Deleted by Ami (7/10/12)
+            logger.info("Priority string not provided, using arbitrary genotyping order: "+priority);
         }
 
-        validateAnnotateUnionArguments();
         samples = sitesOnlyVCF ? Collections.<String>emptySet() : SampleUtils.getSampleList(vcfRods, genotypeMergeOption);
 
         if ( SET_KEY.toLowerCase().equals("null") )
@@ -214,22 +228,22 @@ public class CombineVariants extends RodWalker<Integer, Integer> {
         if ( genotypeMergeOption == VariantContextUtils.GenotypeMergeType.PRIORITIZE && PRIORITY_STRING == null )
             throw new UserException.MissingArgument("rod_priority_list", "Priority string must be provided if you want to prioritize genotypes");
 
-        if ( genotypeMergeOption == VariantContextUtils.GenotypeMergeType.PRIORITIZE )
+        if ( PRIORITY_STRING != null){
             priority = new ArrayList<String>(Arrays.asList(PRIORITY_STRING.split(",")));
-        else
-            priority = new ArrayList<String>(rodNames);
+            if ( rodNames.size() != priority.size() )
+                throw new UserException.BadArgumentValue("rod_priority_list", "The priority list must contain exactly one rod binding per ROD provided to the GATK: rodNames=" + rodNames + " priority=" + priority);
 
-        if ( rodNames.size() != priority.size() )
-            throw new UserException.BadArgumentValue("rod_priority_list", "The priority list must contain exactly one rod binding per ROD provided to the GATK: rodNames=" + rodNames + " priority=" + priority);
+            if ( ! rodNames.containsAll(priority) )
+                throw new UserException.BadArgumentValue("rod_priority_list", "Not all priority elements provided as input RODs: " + PRIORITY_STRING);
+        }
 
-        if ( ! rodNames.containsAll(priority) )
-            throw new UserException.BadArgumentValue("rod_priority_list", "Not all priority elements provided as input RODs: " + PRIORITY_STRING);
     }
 
     public Integer map(RefMetaDataTracker tracker, ReferenceContext ref, AlignmentContext context) {
         if ( tracker == null ) // RodWalkers can make funky map calls
             return 0;
 
+        Set<String> rodNames = SampleUtils.getRodNamesWithVCFHeader(getToolkit(), null);
         // get all of the vcf rods at this locus
         // Need to provide reference bases to simpleMerge starting at current locus
         Collection<VariantContext> vcs = tracker.getValues(variants, context.getLocation());
@@ -276,13 +290,13 @@ public class CombineVariants extends RodWalker<Integer, Integer> {
             for (VariantContext.Type type : VariantContext.Type.values()) {
                 if (VCsByType.containsKey(type))
                     mergedVCs.add(VariantContextUtils.simpleMerge(getToolkit().getGenomeLocParser(), VCsByType.get(type),
-                            priority, filteredRecordsMergeType, genotypeMergeOption, true, printComplexMerges,
+                            priority, rodNames.size() , filteredRecordsMergeType, genotypeMergeOption, true, printComplexMerges,
                             SET_KEY, filteredAreUncalled, MERGE_INFO_WITH_MAX_AC));
             }
         }
         else if (multipleAllelesMergeType == VariantContextUtils.MultipleAllelesMergeType.MIX_TYPES) {
             mergedVCs.add(VariantContextUtils.simpleMerge(getToolkit().getGenomeLocParser(), vcs,
-                    priority, filteredRecordsMergeType, genotypeMergeOption, true, printComplexMerges,
+                    priority, rodNames.size(), filteredRecordsMergeType, genotypeMergeOption, true, printComplexMerges,
                     SET_KEY, filteredAreUncalled, MERGE_INFO_WITH_MAX_AC));
         }
         else {
@@ -299,7 +313,7 @@ public class CombineVariants extends RodWalker<Integer, Integer> {
             VariantContextUtils.calculateChromosomeCounts(builder, false);
             if ( minimalVCF )
                 VariantContextUtils.pruneVariantContext(builder, Arrays.asList(SET_KEY));
-            vcfWriter.add(VariantContextUtils.addMissingSamples(builder.make(), samples));
+            vcfWriter.add(builder.make());
         }
 
         return vcs.isEmpty() ? 0 : 1;
@@ -311,6 +325,11 @@ public class CombineVariants extends RodWalker<Integer, Integer> {
 
     public Integer reduce(Integer counter, Integer sum) {
         return counter + sum;
+    }
+
+    @Override
+    public Integer treeReduce(Integer lhs, Integer rhs) {
+        return reduce(lhs, rhs);
     }
 
     public void onTraversalDone(Integer sum) {}

@@ -24,25 +24,28 @@
 
 package org.broadinstitute.sting.gatk;
 
+import com.google.java.contract.Ensures;
 import net.sf.picard.reference.IndexedFastaSequenceFile;
 import net.sf.picard.reference.ReferenceSequenceFile;
 import net.sf.samtools.SAMFileHeader;
 import net.sf.samtools.SAMRecord;
 import net.sf.samtools.SAMSequenceDictionary;
 import org.apache.log4j.Logger;
-import org.broad.tribble.readers.PositionalBufferedStream;
 import org.broadinstitute.sting.commandline.*;
 import org.broadinstitute.sting.gatk.arguments.GATKArgumentCollection;
 import org.broadinstitute.sting.gatk.arguments.ValidationExclusion;
 import org.broadinstitute.sting.gatk.datasources.reads.*;
 import org.broadinstitute.sting.gatk.datasources.reference.ReferenceDataSource;
 import org.broadinstitute.sting.gatk.datasources.rmd.ReferenceOrderedDataSource;
+import org.broadinstitute.sting.gatk.downsampling.DownsamplingMethod;
 import org.broadinstitute.sting.gatk.executive.MicroScheduler;
 import org.broadinstitute.sting.gatk.filters.FilterManager;
 import org.broadinstitute.sting.gatk.filters.ReadFilter;
 import org.broadinstitute.sting.gatk.filters.ReadGroupBlackListFilter;
 import org.broadinstitute.sting.gatk.io.OutputTracker;
 import org.broadinstitute.sting.gatk.io.stubs.Stub;
+import org.broadinstitute.sting.gatk.iterators.ReadTransformer;
+import org.broadinstitute.sting.gatk.iterators.ReadTransformersMode;
 import org.broadinstitute.sting.gatk.refdata.tracks.RMDTrackBuilder;
 import org.broadinstitute.sting.gatk.refdata.utils.RMDTriplet;
 import org.broadinstitute.sting.gatk.resourcemanagement.ThreadAllocation;
@@ -50,21 +53,18 @@ import org.broadinstitute.sting.gatk.samples.SampleDB;
 import org.broadinstitute.sting.gatk.samples.SampleDBBuilder;
 import org.broadinstitute.sting.gatk.walkers.*;
 import org.broadinstitute.sting.utils.*;
-import org.broadinstitute.sting.utils.baq.BAQ;
 import org.broadinstitute.sting.utils.classloader.GATKLiteUtils;
-import org.broadinstitute.sting.utils.codecs.vcf.VCFCodec;
-import org.broadinstitute.sting.utils.codecs.vcf.VCFHeader;
+import org.broadinstitute.sting.utils.classloader.PluginManager;
 import org.broadinstitute.sting.utils.collections.Pair;
 import org.broadinstitute.sting.utils.exceptions.ReviewedStingException;
 import org.broadinstitute.sting.utils.exceptions.UserException;
 import org.broadinstitute.sting.utils.interval.IntervalUtils;
 import org.broadinstitute.sting.utils.recalibration.BaseRecalibration;
-import org.broadinstitute.sting.utils.variantcontext.GenotypeBuilder;
+import org.broadinstitute.sting.utils.threading.ThreadEfficiencyMonitor;
 
 import java.io.File;
-import java.io.FileInputStream;
-import java.io.IOException;
 import java.util.*;
+import java.util.concurrent.TimeUnit;
 
 /**
  * A GenomeAnalysisEngine that runs a specified walker.
@@ -74,6 +74,7 @@ public class GenomeAnalysisEngine {
      * our log, which we want to capture anything from this class
      */
     private static Logger logger = Logger.getLogger(GenomeAnalysisEngine.class);
+    public static final long NO_RUNTIME_LIMIT = -1;
 
     /**
      * The GATK command-line argument parsing code.
@@ -137,9 +138,16 @@ public class GenomeAnalysisEngine {
     private Collection<ReadFilter> filters;
 
     /**
+     * Collection of the read transformers applied to the reads
+     */
+    private List<ReadTransformer> readTransformers;
+
+    /**
      * Controls the allocation of threads between CPU vs IO.
      */
     private ThreadAllocation threadAllocation;
+
+    private ReadMetrics cumulativeMetrics = null;
 
     /**
      * A currently hacky unique name for this GATK instance
@@ -174,6 +182,13 @@ public class GenomeAnalysisEngine {
      * Collection of reference metadata files over which to traverse.
      */
     private Collection<RMDTriplet> referenceMetaDataFiles;
+
+    /**
+     * The threading efficiency monitor we use in the GATK to monitor our efficiency.
+     *
+     * May be null if one isn't active, or hasn't be initialized yet
+     */
+    private ThreadEfficiencyMonitor threadEfficiencyMonitor = null;
 
     /**
      * Set the reference metadata files to use for this traversal.
@@ -233,10 +248,6 @@ public class GenomeAnalysisEngine {
         if (args.nonDeterministicRandomSeed)
             resetRandomGenerator(System.currentTimeMillis());
 
-        // TODO -- REMOVE ME WHEN WE STOP BCF testing
-        if ( args.USE_SLOW_GENOTYPES )
-            GenotypeBuilder.MAKE_FAST_BY_DEFAULT = false;
-
         // if the use specified an input BQSR recalibration table then enable on the fly recalibration
         if (args.BQSR_RECAL_FILE != null)
             setBaseRecalibration(args.BQSR_RECAL_FILE, args.quantizationLevels, args.disableIndelQuals, args.PRESERVE_QSCORES_LESS_THAN, args.emitOriginalQuals);
@@ -256,6 +267,7 @@ public class GenomeAnalysisEngine {
 
         // our microscheduler, which is in charge of running everything
         MicroScheduler microScheduler = createMicroscheduler();
+        threadEfficiencyMonitor = microScheduler.getThreadEfficiencyMonitor();
 
         // create temp directories as necessary
         initializeTempDirectory();
@@ -284,6 +296,8 @@ public class GenomeAnalysisEngine {
     static {
         deprecatedGATKWalkers.put("CountCovariates", "2.0");
         deprecatedGATKWalkers.put("TableRecalibration", "2.0");
+        deprecatedGATKWalkers.put("AlignmentWalker", "2.2");
+        deprecatedGATKWalkers.put("CountBestAlignments", "2.2");
     }
 
     /**
@@ -354,30 +368,57 @@ public class GenomeAnalysisEngine {
     }
 
     /**
+     * Returns a list of active, initialized read transformers
+     *
+     * @param walker the walker we need to apply read transformers too
+     * @return a non-null list of read transformers
+     */
+    public void initializeReadTransformers(final Walker walker) {
+        final List<ReadTransformer> activeTransformers = new ArrayList<ReadTransformer>();
+
+        final ReadTransformersMode overrideMode = WalkerManager.getWalkerAnnotation(walker, ReadTransformersMode.class);
+        final ReadTransformer.ApplicationTime overrideTime = overrideMode != null ? overrideMode.ApplicationTime() : null;
+
+        final PluginManager<ReadTransformer> pluginManager = new PluginManager<ReadTransformer>(ReadTransformer.class);
+
+        for ( final ReadTransformer transformer : pluginManager.createAllTypes() ) {
+            transformer.initialize(overrideTime, this, walker);
+            if ( transformer.enabled() )
+                activeTransformers.add(transformer);
+        }
+
+        setReadTransformers(activeTransformers);
+    }
+
+    public List<ReadTransformer> getReadTransformers() {
+        return readTransformers;
+    }
+
+    private void setReadTransformers(final List<ReadTransformer> readTransformers) {
+        if ( readTransformers == null )
+            throw new ReviewedStingException("read transformers cannot be null");
+        this.readTransformers = readTransformers;
+    }
+
+    /**
      * Parse out the thread allocation from the given command-line argument.
      */
     private void determineThreadAllocation() {
-        Tags tags = parsingEngine.getTags(argCollection.numberOfThreads);
+        if ( argCollection.numberOfDataThreads < 1 ) throw new UserException.BadArgumentValue("num_threads", "cannot be less than 1, but saw " + argCollection.numberOfDataThreads);
+        if ( argCollection.numberOfCPUThreadsPerDataThread < 1 ) throw new UserException.BadArgumentValue("num_cpu_threads", "cannot be less than 1, but saw " + argCollection.numberOfCPUThreadsPerDataThread);
+        if ( argCollection.numberOfIOThreads < 0 ) throw new UserException.BadArgumentValue("num_io_threads", "cannot be less than 0, but saw " + argCollection.numberOfIOThreads);
 
-        // TODO: Kill this complicated logic once Queue supports arbitrary tagged parameters.
-        Integer numCPUThreads = null;
-        if(tags.containsKey("cpu") && argCollection.numberOfCPUThreads != null)
-            throw new UserException("Number of CPU threads specified both directly on the command-line and as a tag to the nt argument.  Please specify only one or the other.");
-        else if(tags.containsKey("cpu"))
-            numCPUThreads = Integer.parseInt(tags.getValue("cpu"));
-        else if(argCollection.numberOfCPUThreads != null)
-            numCPUThreads = argCollection.numberOfCPUThreads;
-
-        Integer numIOThreads = null;
-        if(tags.containsKey("io") && argCollection.numberOfIOThreads != null)
-            throw new UserException("Number of IO threads specified both directly on the command-line and as a tag to the nt argument.  Please specify only one or the other.");
-        else if(tags.containsKey("io"))
-            numIOThreads = Integer.parseInt(tags.getValue("io"));
-        else if(argCollection.numberOfIOThreads != null)
-            numIOThreads = argCollection.numberOfIOThreads;
-
-        this.threadAllocation = new ThreadAllocation(argCollection.numberOfThreads,numCPUThreads,numIOThreads);
+        this.threadAllocation = new ThreadAllocation(argCollection.numberOfDataThreads,
+                argCollection.numberOfCPUThreadsPerDataThread,
+                argCollection.numberOfIOThreads,
+                argCollection.monitorThreadEfficiency);
     }
+
+    public int getTotalNumberOfThreads() {
+        return this.threadAllocation == null ? 1 : threadAllocation.getTotalNumThreads();
+    }
+
+
 
     /**
      * Allow subclasses and others within this package direct access to the walker manager.
@@ -404,22 +445,22 @@ public class GenomeAnalysisEngine {
 
     protected DownsamplingMethod getDownsamplingMethod() {
         GATKArgumentCollection argCollection = this.getArguments();
-        DownsamplingMethod method;
-        if(argCollection.getDownsamplingMethod() != null)
-            method = argCollection.getDownsamplingMethod();
-        else if(WalkerManager.getDownsamplingMethod(walker) != null)
-            method = WalkerManager.getDownsamplingMethod(walker);
-        else
-            method = GATKArgumentCollection.getDefaultDownsamplingMethod();
+
+        // Legacy downsampler can only be selected via the command line, not via walker annotations
+        boolean useLegacyDownsampler = argCollection.useLegacyDownsampler;
+
+        DownsamplingMethod commandLineMethod = argCollection.getDownsamplingMethod();
+        DownsamplingMethod walkerMethod = WalkerManager.getDownsamplingMethod(walker, useLegacyDownsampler);
+        DownsamplingMethod defaultMethod = DownsamplingMethod.getDefaultDownsamplingMethod(walker, useLegacyDownsampler);
+
+        DownsamplingMethod method = commandLineMethod != null ? commandLineMethod : (walkerMethod != null ? walkerMethod : defaultMethod);
+        method.checkCompatibilityWithWalker(walker);
         return method;
     }
 
     protected void setDownsamplingMethod(DownsamplingMethod method) {
         argCollection.setDownsamplingMethod(method);
     }
-
-    public BAQ.QualityMode getWalkerBAQQualityMode()         { return WalkerManager.getBAQQualityMode(walker); }
-    public BAQ.ApplicationTime getWalkerBAQApplicationTime() { return WalkerManager.getBAQApplicationTime(walker); }    
 
     protected boolean includeReadsWithDeletionAtLoci() {
         return walker.includeReadsWithDeletionAtLoci();
@@ -508,6 +549,7 @@ public class GenomeAnalysisEngine {
      */
     protected Iterable<Shard> getShardStrategy(SAMDataSource readsDataSource, ReferenceSequenceFile drivingDataSource, GenomeLocSortedSet intervals) {
         ValidationExclusion exclusions = (readsDataSource != null ? readsDataSource.getReadsInfo().getValidationExclusionList() : null);
+        DownsamplingMethod downsamplingMethod = readsDataSource != null ? readsDataSource.getReadsInfo().getDownsamplingMethod() : null;
         ReferenceDataSource referenceDataSource = this.getReferenceDataSource();
 
         // If reads are present, assume that accessing the reads is always the dominant factor and shard based on that supposition.
@@ -542,10 +584,15 @@ public class GenomeAnalysisEngine {
                         throw new UserException.CommandLineException("Pairs traversal cannot be used in conjunction with intervals.");
                 }
 
+                // Use the legacy ReadShardBalancer if legacy downsampling is enabled
+                ShardBalancer readShardBalancer = downsamplingMethod != null && downsamplingMethod.useLegacyDownsampler ?
+                                                  new LegacyReadShardBalancer() :
+                                                  new ReadShardBalancer();
+
                 if(intervals == null)
-                    return readsDataSource.createShardIteratorOverAllReads(new ReadShardBalancer());
+                    return readsDataSource.createShardIteratorOverAllReads(readShardBalancer);
                 else
-                    return readsDataSource.createShardIteratorOverIntervals(intervals,new ReadShardBalancer());
+                    return readsDataSource.createShardIteratorOverIntervals(intervals, readShardBalancer);
             }
             else
                 throw new ReviewedStingException("Unable to determine walker type for walker " + walker.getClass().getName());
@@ -643,14 +690,14 @@ public class GenomeAnalysisEngine {
 
         // if include argument isn't given, create new set of all possible intervals
 
-        Pair<GenomeLocSortedSet, GenomeLocSortedSet> includeExcludePair = IntervalUtils.parseIntervalBindingsPair(
+        final Pair<GenomeLocSortedSet, GenomeLocSortedSet> includeExcludePair = IntervalUtils.parseIntervalBindingsPair(
                 this.referenceDataSource,
                 argCollection.intervals,
                 argCollection.intervalSetRule, argCollection.intervalMerging, argCollection.intervalPadding,
                 argCollection.excludeIntervals);
 
-        GenomeLocSortedSet includeSortedSet = includeExcludePair.getFirst();
-        GenomeLocSortedSet excludeSortedSet = includeExcludePair.getSecond();
+        final GenomeLocSortedSet includeSortedSet = includeExcludePair.getFirst();
+        final GenomeLocSortedSet excludeSortedSet = includeExcludePair.getSecond();
 
         // if no exclude arguments, can return parseIntervalArguments directly
         if ( excludeSortedSet == null )
@@ -661,13 +708,15 @@ public class GenomeAnalysisEngine {
             intervals = includeSortedSet.subtractRegions(excludeSortedSet);
 
             // logging messages only printed when exclude (-XL) arguments are given
-            long toPruneSize = includeSortedSet.coveredSize();
-            long toExcludeSize = excludeSortedSet.coveredSize();
-            long intervalSize = intervals.coveredSize();
+            final long toPruneSize = includeSortedSet.coveredSize();
+            final long toExcludeSize = excludeSortedSet.coveredSize();
+            final long intervalSize = intervals.coveredSize();
             logger.info(String.format("Initial include intervals span %d loci; exclude intervals span %d loci", toPruneSize, toExcludeSize));
             logger.info(String.format("Excluding %d loci from original intervals (%.2f%% reduction)",
                     toPruneSize - intervalSize, (toPruneSize - intervalSize) / (0.01 * toPruneSize)));
         }
+
+        logger.info(String.format("Processing %d bp from intervals", intervals.coveredSize()));
     }
 
     /**
@@ -701,13 +750,12 @@ public class GenomeAnalysisEngine {
     protected void initializeDataSources() {
         logger.info("Strictness is " + argCollection.strictnessLevel);
 
-        // TODO -- REMOVE ME
-        BAQ.DEFAULT_GOP = argCollection.BAQGOP;
-
         validateSuppliedReference();
         setReferenceDataSource(argCollection.referenceFile);
 
         validateSuppliedReads();
+        initializeReadTransformers(walker);
+
         readsDataSource = createReadsDataSource(argCollection,genomeLocParser,referenceDataSource.getReference());
 
         for (ReadFilter filter : filters)
@@ -788,14 +836,21 @@ public class GenomeAnalysisEngine {
      * @return A data source for the given set of reads.
      */
     private SAMDataSource createReadsDataSource(GATKArgumentCollection argCollection, GenomeLocParser genomeLocParser, IndexedFastaSequenceFile refReader) {
-        DownsamplingMethod method = getDownsamplingMethod();
+        DownsamplingMethod downsamplingMethod = getDownsamplingMethod();
 
         // Synchronize the method back into the collection so that it shows up when
         // interrogating for the downsample method during command line recreation.
-        setDownsamplingMethod(method);
+        setDownsamplingMethod(downsamplingMethod);
 
-        if ( getWalkerBAQApplicationTime() == BAQ.ApplicationTime.FORBIDDEN && argCollection.BAQMode != BAQ.CalculationMode.OFF)
-            throw new UserException.BadArgumentValue("baq", "Walker cannot accept BAQ'd base qualities, and yet BAQ mode " + argCollection.BAQMode + " was requested.");
+        logger.info(downsamplingMethod);
+
+        if (argCollection.removeProgramRecords && argCollection.keepProgramRecords)
+            throw new UserException.BadArgumentValue("rpr / kpr", "Cannot enable both options");
+
+        boolean removeProgramRecords = argCollection.removeProgramRecords || walker.getClass().isAnnotationPresent(RemoveProgramRecords.class);
+
+        if (argCollection.keepProgramRecords)
+            removeProgramRecords = false;
 
         return new SAMDataSource(
                 samReaderIDs,
@@ -805,15 +860,13 @@ public class GenomeAnalysisEngine {
                 argCollection.useOriginalBaseQualities,
                 argCollection.strictnessLevel,
                 argCollection.readBufferSize,
-                method,
+                downsamplingMethod,
                 new ValidationExclusion(Arrays.asList(argCollection.unsafe)),
                 filters,
+                readTransformers,
                 includeReadsWithDeletionAtLoci(),
-                getWalkerBAQApplicationTime() == BAQ.ApplicationTime.ON_INPUT ? argCollection.BAQMode : BAQ.CalculationMode.OFF,
-                getWalkerBAQQualityMode(),
-                refReader,
-                getBaseRecalibration(),
-                argCollection.defaultBaseQualities);
+                argCollection.defaultBaseQualities,
+                removeProgramRecords);
     }
 
     /**
@@ -840,20 +893,9 @@ public class GenomeAnalysisEngine {
                                                                             SAMSequenceDictionary sequenceDictionary,
                                                                             GenomeLocParser genomeLocParser,
                                                                             ValidationExclusion.TYPE validationExclusionType) {
-        VCFHeader header = null;
-        if ( getArguments().repairVCFHeader != null ) {
-            try {
-                final PositionalBufferedStream pbs = new PositionalBufferedStream(new FileInputStream(getArguments().repairVCFHeader));
-                header = (VCFHeader)new VCFCodec().readHeader(pbs).getHeaderValue();
-                pbs.close();
-            } catch ( IOException e ) {
-                throw new UserException.CouldNotReadInputFile(getArguments().repairVCFHeader, e);
-            }
-        }
+        final RMDTrackBuilder builder = new RMDTrackBuilder(sequenceDictionary,genomeLocParser, validationExclusionType);
 
-        RMDTrackBuilder builder = new RMDTrackBuilder(sequenceDictionary,genomeLocParser, header, validationExclusionType);
-
-        List<ReferenceOrderedDataSource> dataSources = new ArrayList<ReferenceOrderedDataSource>();
+        final List<ReferenceOrderedDataSource> dataSources = new ArrayList<ReferenceOrderedDataSource>();
         for (RMDTriplet fileDescriptor : referenceMetaDataFiles)
             dataSources.add(new ReferenceOrderedDataSource(fileDescriptor,
                                                            builder,
@@ -950,6 +992,22 @@ public class GenomeAnalysisEngine {
     }
 
     /**
+     * Get the list of regions of the genome being processed.  If the user
+     * requested specific intervals, return those, otherwise return regions
+     * corresponding to the entire genome.  Never returns null.
+     *
+     * @return a non-null set of intervals being processed
+     */
+    @Ensures("result != null")
+    public GenomeLocSortedSet getRegionsOfGenomeBeingProcessed() {
+        if ( getIntervals() == null )
+            // if we don't have any intervals defined, create intervals from the reference itself
+            return GenomeLocSortedSet.createSetFromSequenceDictionary(getReferenceDataSource().getReference().getSequenceDictionary());
+        else
+            return getIntervals();
+    }
+
+    /**
      * Gets the list of filters employed by this engine.
      * @return Collection of filters (actual instances) used by this engine.
      */
@@ -1006,7 +1064,19 @@ public class GenomeAnalysisEngine {
      *         owned by the caller; the caller can do with the object what they wish.
      */
     public ReadMetrics getCumulativeMetrics() {
-        return readsDataSource == null ? null : readsDataSource.getCumulativeReadMetrics();
+        // todo -- probably shouldn't be lazy
+        if ( cumulativeMetrics == null )
+            cumulativeMetrics = readsDataSource == null ? new ReadMetrics() : readsDataSource.getCumulativeReadMetrics();
+        return cumulativeMetrics;
+    }
+
+    /**
+     * Return the global ThreadEfficiencyMonitor, if there is one
+     *
+     * @return the monitor, or null if none is active
+     */
+    public ThreadEfficiencyMonitor getThreadEfficiencyMonitor() {
+        return threadEfficiencyMonitor;
     }
 
     // -------------------------------------------------------------------------------------
@@ -1026,6 +1096,33 @@ public class GenomeAnalysisEngine {
     public String createApproximateCommandLineArgumentString(Object... argumentProviders) {
         return CommandLineUtils.createApproximateCommandLineArgumentString(parsingEngine,argumentProviders);
     }
-    
 
+    /**
+     * Does the current runtime in unit exceed the runtime limit, if one has been provided?
+     *
+     * @param runtime the runtime of this GATK instance in minutes
+     * @param unit the time unit of runtime
+     * @return false if not limit was requested or if runtime <= the limit, true otherwise
+     */
+    public boolean exceedsRuntimeLimit(final long runtime, final TimeUnit unit) {
+        if ( runtime < 0 ) throw new IllegalArgumentException("runtime must be >= 0 but got " + runtime);
+
+        if ( getArguments().maxRuntime == NO_RUNTIME_LIMIT )
+            return false;
+        else {
+            final long actualRuntimeNano = TimeUnit.NANOSECONDS.convert(runtime, unit);
+            final long maxRuntimeNano = getRuntimeLimitInNanoseconds();
+            return actualRuntimeNano > maxRuntimeNano;
+        }
+    }
+
+    /**
+     * @return the runtime limit in nanoseconds, or -1 if no limit was specified
+     */
+    public long getRuntimeLimitInNanoseconds() {
+        if ( getArguments().maxRuntime == NO_RUNTIME_LIMIT )
+            return -1;
+        else
+            return TimeUnit.NANOSECONDS.convert(getArguments().maxRuntime, getArguments().maxRuntimeUnits);
+    }
 }

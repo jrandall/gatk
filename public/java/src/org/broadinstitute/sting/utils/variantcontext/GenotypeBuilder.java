@@ -53,7 +53,8 @@ import java.util.*;
  */
 @Invariant({"alleles != null"})
 public final class GenotypeBuilder {
-    public static boolean MAKE_FAST_BY_DEFAULT = true;
+    private static final List<Allele> HAPLOID_NO_CALL = Arrays.asList(Allele.NO_CALL);
+    private static final List<Allele> DIPLOID_NO_CALL = Arrays.asList(Allele.NO_CALL, Allele.NO_CALL);
 
     private String sampleName = null;
     private List<Allele> alleles = Collections.emptyList();
@@ -67,8 +68,6 @@ public final class GenotypeBuilder {
     private String filters = null;
     private int initialAttributeMapSize = 5;
 
-    private boolean useFast = MAKE_FAST_BY_DEFAULT;
-
     private final static Map<String, Object> NO_ATTRIBUTES =
             Collections.unmodifiableMap(new HashMap<String, Object>(0));
 
@@ -78,29 +77,37 @@ public final class GenotypeBuilder {
     //
     // -----------------------------------------------------------------
 
-    public final static Genotype create(final String sampleName, final List<Allele> alleles) {
+    public static Genotype create(final String sampleName, final List<Allele> alleles) {
         return new GenotypeBuilder(sampleName, alleles).make();
     }
 
-    public final static Genotype create(final String sampleName,
+    public static Genotype create(final String sampleName,
                                         final List<Allele> alleles,
                                         final Map<String, Object> attributes) {
         return new GenotypeBuilder(sampleName, alleles).attributes(attributes).make();
     }
 
-    protected final static Genotype create(final String sampleName,
+    protected static Genotype create(final String sampleName,
                                            final List<Allele> alleles,
                                            final double[] gls) {
         return new GenotypeBuilder(sampleName, alleles).PL(gls).make();
     }
 
-    public final static Genotype create(final String sampleName,
-                                        final List<Allele> alleles,
-                                        final double log10Perror,
-                                        final Map<String, Object> attributes) {
-        return new GenotypeBuilder(sampleName, alleles)
-                .GQ(log10Perror == SlowGenotype.NO_LOG10_PERROR ? -1 : (int)(log10Perror * -10))
-                .attributes(attributes).make();
+    /**
+     * Create a new Genotype object for a sample that's missing from the VC (i.e., in
+     * the output header).  Defaults to a diploid no call genotype ./.
+     *
+     * @param sampleName the name of this sample
+     * @return an initialized Genotype with sampleName that's a diploid ./. no call genotype
+     */
+    public static Genotype createMissing(final String sampleName, final int ploidy) {
+        final GenotypeBuilder builder = new GenotypeBuilder(sampleName);
+        switch ( ploidy ) {
+            case 1:  builder.alleles(HAPLOID_NO_CALL); break;
+            case 2:  builder.alleles(DIPLOID_NO_CALL); break;
+            default: builder.alleles(Collections.nCopies(ploidy, Allele.NO_CALL)); break;
+        }
+        return builder.make();
     }
 
     /**
@@ -182,23 +189,8 @@ public final class GenotypeBuilder {
      */
     @Ensures({"result != null"})
     public Genotype make() {
-        if ( useFast ) {
-            final Map<String, Object> ea = extendedAttributes == null ? NO_ATTRIBUTES : extendedAttributes;
-            return new FastGenotype(sampleName, alleles, isPhased, GQ, DP, AD, PL, filters, ea);
-        } else {
-            final Map<String, Object> attributes = new LinkedHashMap<String, Object>();
-            if ( extendedAttributes != null ) attributes.putAll(extendedAttributes);
-            final double log10PError = GQ == -1 ? SlowGenotype.NO_LOG10_PERROR : (GQ == 0 ? 0 : GQ / -10.0);
-            if ( DP != -1 ) attributes.put(VCFConstants.DEPTH_KEY, DP);
-            if ( AD != null ) attributes.put(VCFConstants.GENOTYPE_ALLELE_DEPTHS, AD);
-            final double[] log10likelihoods = PL != null ? GenotypeLikelihoods.fromPLs(PL).getAsVector() : null;
-            return new SlowGenotype(sampleName, alleles, log10PError, filters, attributes, isPhased, log10likelihoods);
-        }
-    }
-
-    public GenotypeBuilder useFast(boolean useFast) {
-        this.useFast = useFast;
-        return this;
+        final Map<String, Object> ea = extendedAttributes == null ? NO_ATTRIBUTES : extendedAttributes;
+        return new FastGenotype(sampleName, alleles, isPhased, GQ, DP, AD, PL, filters, ea);
     }
 
     /**

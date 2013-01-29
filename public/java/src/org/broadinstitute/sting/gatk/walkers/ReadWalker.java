@@ -1,8 +1,7 @@
 package org.broadinstitute.sting.gatk.walkers;
 
-import net.sf.samtools.SAMRecord;
 import org.broadinstitute.sting.gatk.contexts.ReferenceContext;
-import org.broadinstitute.sting.gatk.refdata.ReadMetaDataTracker;
+import org.broadinstitute.sting.gatk.refdata.RefMetaDataTracker;
 import org.broadinstitute.sting.utils.sam.GATKSAMRecord;
 
 /**
@@ -12,7 +11,7 @@ import org.broadinstitute.sting.utils.sam.GATKSAMRecord;
  * Time: 2:52:28 PM
  * To change this template use File | Settings | File Templates.
  */
-@Requires({DataSource.READS, DataSource.REFERENCE_BASES})
+@Requires({DataSource.READS, DataSource.REFERENCE})
 @PartitionBy(PartitionType.READ)
 public abstract class ReadWalker<MapType, ReduceType> extends Walker<MapType, ReduceType> {
     public boolean requiresOrderedReads() { return false; }
@@ -27,5 +26,5 @@ public abstract class ReadWalker<MapType, ReduceType> extends Walker<MapType, Re
     }
 
     // Map over the org.broadinstitute.sting.gatk.contexts.AlignmentContext
-    public abstract MapType map(ReferenceContext ref, GATKSAMRecord read, ReadMetaDataTracker metaDataTracker);
+    public abstract MapType map(ReferenceContext ref, GATKSAMRecord read, RefMetaDataTracker metaDataTracker);
 }

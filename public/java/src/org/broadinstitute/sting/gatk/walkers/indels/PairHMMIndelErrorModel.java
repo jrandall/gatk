@@ -25,27 +25,32 @@
 
 package org.broadinstitute.sting.gatk.walkers.indels;
 
+import com.google.java.contract.Ensures;
 import org.broadinstitute.sting.gatk.contexts.ReferenceContext;
+import org.broadinstitute.sting.utils.genotyper.PerReadAlleleLikelihoodMap;
 import org.broadinstitute.sting.utils.Haplotype;
 import org.broadinstitute.sting.utils.MathUtils;
-import org.broadinstitute.sting.utils.PairHMM;
 import org.broadinstitute.sting.utils.clipping.ReadClipper;
+import org.broadinstitute.sting.utils.exceptions.UserException;
+import org.broadinstitute.sting.utils.pairhmm.ExactPairHMM;
+import org.broadinstitute.sting.utils.pairhmm.OriginalPairHMM;
+import org.broadinstitute.sting.utils.pairhmm.PairHMM;
 import org.broadinstitute.sting.utils.pileup.PileupElement;
 import org.broadinstitute.sting.utils.pileup.ReadBackedPileup;
 import org.broadinstitute.sting.utils.sam.GATKSAMRecord;
 import org.broadinstitute.sting.utils.sam.ReadUtils;
 import org.broadinstitute.sting.utils.variantcontext.Allele;
 
+import java.io.PrintStream;
 import java.util.Arrays;
-import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.Map;
 
 
 public class PairHMMIndelErrorModel {
     public static final int BASE_QUAL_THRESHOLD = 20;
 
     private boolean DEBUG = false;
-    private boolean bandedLikelihoods = false;
 
     private static final int MAX_CACHED_QUAL = 127;
 
@@ -63,6 +68,8 @@ public class PairHMMIndelErrorModel {
 
     private final byte[] GAP_OPEN_PROB_TABLE;
     private final byte[] GAP_CONT_PROB_TABLE;
+
+    private final PairHMM pairHMM;
 
     /////////////////////////////
     // Private Member Variables
@@ -82,14 +89,25 @@ public class PairHMMIndelErrorModel {
         }
     }
 
-    public PairHMMIndelErrorModel(byte indelGOP, byte indelGCP, boolean deb, boolean bandedLikelihoods) {
+    public PairHMMIndelErrorModel(byte indelGOP, byte indelGCP, boolean deb, final PairHMM.HMM_IMPLEMENTATION hmmType ) {
         this.DEBUG = deb;
-        this.bandedLikelihoods = bandedLikelihoods;
+
+        switch (hmmType) {
+            case EXACT:
+                pairHMM = new ExactPairHMM();
+                break;
+            case ORIGINAL:
+                pairHMM = new OriginalPairHMM();
+                break;
+            case CACHING:
+            case LOGLESS_CACHING:
+            default:
+                throw new UserException.BadArgumentValue("pairHMM", "Specified pairHMM implementation is unrecognized or incompatible with the UnifiedGenotyper. Acceptable options are ORIGINAL and EXACT.");
+        }
 
         // fill gap penalty table, affine naive model:
         this.GAP_CONT_PROB_TABLE = new byte[MAX_HRUN_GAP_IDX];
         this.GAP_OPEN_PROB_TABLE = new byte[MAX_HRUN_GAP_IDX];
-
 
         for (int i = 0; i < START_HRUN_GAP_IDX; i++) {
             GAP_OPEN_PROB_TABLE[i] = indelGOP;
@@ -166,23 +184,30 @@ public class PairHMMIndelErrorModel {
     }
 
 
-    public synchronized double[] computeDiploidReadHaplotypeLikelihoods(ReadBackedPileup pileup, LinkedHashMap<Allele, Haplotype> haplotypeMap, ReferenceContext ref, int eventLength, HashMap<PileupElement, LinkedHashMap<Allele, Double>> indelLikelihoodMap){
+    public synchronized double[] computeDiploidReadHaplotypeLikelihoods(final ReadBackedPileup pileup,
+                                                                        final LinkedHashMap<Allele, Haplotype> haplotypeMap,
+                                                                        final ReferenceContext ref,
+                                                                        final int eventLength,
+                                                                        final PerReadAlleleLikelihoodMap perReadAlleleLikelihoodMap,
+                                                                        final double downsamplingFraction,
+                                                                        final PrintStream downsamplingLog) {
         final int numHaplotypes = haplotypeMap.size();
 
         final int readCounts[] = new int[pileup.getNumberOfElements()];
-        final double[][] readLikelihoods = computeGeneralReadHaplotypeLikelihoods(pileup, haplotypeMap, ref, eventLength, indelLikelihoodMap, readCounts);
+        final double[][] readLikelihoods = computeGeneralReadHaplotypeLikelihoods(pileup, haplotypeMap, ref, eventLength, perReadAlleleLikelihoodMap, readCounts);
+        perReadAlleleLikelihoodMap.performPerAlleleDownsampling(downsamplingFraction, downsamplingLog);
         return getDiploidHaplotypeLikelihoods(numHaplotypes, readCounts, readLikelihoods);
         
     }
 
-    public synchronized double[][] computeGeneralReadHaplotypeLikelihoods(final ReadBackedPileup pileup, 
+    @Ensures("result != null && result.length == pileup.getNumberOfElements()")
+    public synchronized double[][] computeGeneralReadHaplotypeLikelihoods(final ReadBackedPileup pileup,
                                                                           final LinkedHashMap<Allele, Haplotype> haplotypeMap, 
                                                                           final ReferenceContext ref,
                                                                           final int eventLength, 
-                                                                          final HashMap<PileupElement, LinkedHashMap<Allele, Double>> indelLikelihoodMap,
+                                                                          final PerReadAlleleLikelihoodMap perReadAlleleLikelihoodMap,
                                                                           final int[] readCounts) {
         final double readLikelihoods[][] = new double[pileup.getNumberOfElements()][haplotypeMap.size()];
-        final PairHMM pairHMM = new PairHMM(bandedLikelihoods);
 
         int readIdx=0;
         for (PileupElement p: pileup) {
@@ -190,8 +215,8 @@ public class PairHMMIndelErrorModel {
             readCounts[readIdx] = p.getRepresentativeCount();
 
             // check if we've already computed likelihoods for this pileup element (i.e. for this read at this location)
-            if (indelLikelihoodMap.containsKey(p)) {
-                HashMap<Allele,Double> el = indelLikelihoodMap.get(p);
+            if (perReadAlleleLikelihoodMap.containsPileupElement(p)) {
+                Map<Allele,Double> el = perReadAlleleLikelihoodMap.getLikelihoodsAssociatedWithPileupElement(p);
                 int j=0;
                 for (Allele a: haplotypeMap.keySet()) {
                     readLikelihoods[readIdx][j++] = el.get(a);
@@ -199,7 +224,7 @@ public class PairHMMIndelErrorModel {
             }
             else {
                 final int refWindowStart = ref.getWindow().getStart();
-                final int refWindowStop = ref.getWindow().getStop();
+                final int refWindowStop  = ref.getWindow().getStop();
 
                 if (DEBUG) {
                     System.out.format("Read Name:%s, aln start:%d aln stop:%d orig cigar:%s\n",p.getRead().getReadName(), p.getRead().getAlignmentStart(), p.getRead().getAlignmentEnd(), p.getRead().getCigarString());
@@ -262,6 +287,9 @@ public class PairHMMIndelErrorModel {
                 if (startLocationInRefForHaplotypes < ref.getWindow().getStart()) {
                     startLocationInRefForHaplotypes = ref.getWindow().getStart();                                       // read starts before haplotype: read will have to be cut numStartSoftClippedBases += ref.getWindow().getStart() - startLocationInRefForHaplotypes;
                 }
+                else if (startLocationInRefForHaplotypes > ref.getWindow().getStop()) {
+                    startLocationInRefForHaplotypes = ref.getWindow().getStop();                                        // read starts after haplotype: read will have to be clipped completely;
+                }
 
                 if (stopLocationInRefForHaplotypes > ref.getWindow().getStop()) {
                     stopLocationInRefForHaplotypes = ref.getWindow().getStop();                                         // check also if end of read will go beyond reference context
@@ -278,7 +306,7 @@ public class PairHMMIndelErrorModel {
                     System.out.format("numStartSoftClippedBases: %d numEndSoftClippedBases: %d WinStart:%d WinStop:%d start: %d stop: %d readLength: %d\n",
                             numStartSoftClippedBases, numEndSoftClippedBases, ref.getWindow().getStart(), ref.getWindow().getStop(), startLocationInRefForHaplotypes, stopLocationInRefForHaplotypes, read.getReadLength());
 
-                LinkedHashMap<Allele,Double> readEl = new LinkedHashMap<Allele,Double>();
+               // LinkedHashMap<Allele,Double> readEl = new LinkedHashMap<Allele,Double>();
 
                 /**
                  * Check if we'll end up with an empty read once all clipping is done
@@ -286,7 +314,7 @@ public class PairHMMIndelErrorModel {
                 if (numStartSoftClippedBases + numEndSoftClippedBases >= unclippedReadBases.length) {
                     int j=0;
                     for (Allele a: haplotypeMap.keySet()) {
-                        readEl.put(a,0.0);
+                        perReadAlleleLikelihoodMap.add(p,a,0.0);
                         readLikelihoods[readIdx][j++] = 0.0;
                     }
                 }
@@ -295,8 +323,6 @@ public class PairHMMIndelErrorModel {
                     final byte[] readQuals = Arrays.copyOfRange(unclippedReadQuals,numStartSoftClippedBases, unclippedReadBases.length-numEndSoftClippedBases);
                     int j=0;
 
-                    // initialize path metric and traceback memories for likelihood computation
-                    double[][] matchMetricArray = null, XMetricArray = null, YMetricArray = null;
                     byte[] previousHaplotypeSeen = null;
                     final byte[] contextLogGapOpenProbabilities = new byte[readBases.length];
                     final byte[] contextLogGapContinuationProbabilities  = new byte[readBases.length];
@@ -305,7 +331,6 @@ public class PairHMMIndelErrorModel {
                     final int[] hrunProfile = new int[readBases.length];
                     getContextHomopolymerLength(readBases,hrunProfile);
                     fillGapProbabilities(hrunProfile, contextLogGapOpenProbabilities, contextLogGapContinuationProbabilities);
-
 
                     for (Allele a: haplotypeMap.keySet()) {
 
@@ -316,6 +341,8 @@ public class PairHMMIndelErrorModel {
 
                         if (startLocationInRefForHaplotypes < haplotype.getStartPosition())
                             startLocationInRefForHaplotypes = haplotype.getStartPosition();
+                        else if (startLocationInRefForHaplotypes > haplotype.getStopPosition())
+                            startLocationInRefForHaplotypes = haplotype.getStopPosition();
 
                         final long indStart = startLocationInRefForHaplotypes - haplotype.getStartPosition();
                         final long indStop =  stopLocationInRefForHaplotypes - haplotype.getStartPosition();
@@ -325,45 +352,39 @@ public class PairHMMIndelErrorModel {
                             System.out.format("indStart: %d indStop: %d WinStart:%d WinStop:%d start: %d stop: %d readLength: %d C:%s\n",
                                     indStart, indStop, ref.getWindow().getStart(), ref.getWindow().getStop(), startLocationInRefForHaplotypes, stopLocationInRefForHaplotypes, read.getReadLength(), read.getCigar().toString());
 
+                        final byte[] haplotypeBases = Arrays.copyOfRange(haplotype.getBases(),
+                                (int)indStart, (int)indStop);
+
+                        final int X_METRIC_LENGTH = readBases.length+2;
+                        final int Y_METRIC_LENGTH = haplotypeBases.length+2;
+
+                        if (previousHaplotypeSeen == null) {
+                            //no need to reallocate arrays for each new haplotype, as length won't change
+                            pairHMM.initialize(X_METRIC_LENGTH, Y_METRIC_LENGTH);
+                        }
+
+                        int startIndexInHaplotype = 0;
+                        if (previousHaplotypeSeen != null)
+                            startIndexInHaplotype = computeFirstDifferingPosition(haplotypeBases, previousHaplotypeSeen);
+                        previousHaplotypeSeen = haplotypeBases.clone();
+
+                        readLikelihood = pairHMM.computeReadLikelihoodGivenHaplotypeLog10(haplotypeBases, readBases, readQuals,
+                                (read.hasBaseIndelQualities() ? read.getBaseInsertionQualities() : contextLogGapOpenProbabilities),
+                                (read.hasBaseIndelQualities() ? read.getBaseDeletionQualities() : contextLogGapOpenProbabilities),
+                                contextLogGapContinuationProbabilities, startIndexInHaplotype, false);
 
 
-                            final byte[] haplotypeBases = Arrays.copyOfRange(haplotype.getBases(),
-                                    (int)indStart, (int)indStop);
+                        if (DEBUG) {
+                            System.out.println("H:"+new String(haplotypeBases));
+                            System.out.println("R:"+new String(readBases));
+                            System.out.format("L:%4.2f\n",readLikelihood);
+                            System.out.format("StPos:%d\n", startIndexInHaplotype);
+                        }
 
-                            final int X_METRIC_LENGTH = readBases.length+2;
-                            final int Y_METRIC_LENGTH = haplotypeBases.length+2;
-
-                            if (matchMetricArray == null) {
-                                //no need to reallocate arrays for each new haplotype, as length won't change
-                                matchMetricArray = new double[X_METRIC_LENGTH][Y_METRIC_LENGTH];
-                                XMetricArray = new double[X_METRIC_LENGTH][Y_METRIC_LENGTH];
-                                YMetricArray = new double[X_METRIC_LENGTH][Y_METRIC_LENGTH];
-
-
-                                PairHMM.initializeArrays(matchMetricArray, XMetricArray, YMetricArray, X_METRIC_LENGTH);
-                            }
-
-                            int startIndexInHaplotype = 0;
-                            if (previousHaplotypeSeen != null)
-                                startIndexInHaplotype = computeFirstDifferingPosition(haplotypeBases, previousHaplotypeSeen);
-                            previousHaplotypeSeen = haplotypeBases.clone();
-
-                            readLikelihood = pairHMM.computeReadLikelihoodGivenHaplotype(haplotypeBases, readBases, readQuals,
-                                    contextLogGapOpenProbabilities, contextLogGapOpenProbabilities, contextLogGapContinuationProbabilities,
-                                    startIndexInHaplotype, matchMetricArray, XMetricArray, YMetricArray);
-
-
-                            if (DEBUG) {
-                                System.out.println("H:"+new String(haplotypeBases));
-                                System.out.println("R:"+new String(readBases));
-                                System.out.format("L:%4.2f\n",readLikelihood);
-                                System.out.format("StPos:%d\n", startIndexInHaplotype);
-                            }
-                        readEl.put(a,readLikelihood);
+                        perReadAlleleLikelihoodMap.add(p, a, readLikelihood);
                         readLikelihoods[readIdx][j++] = readLikelihood;
                     }
                 }
-                indelLikelihoodMap.put(p,readEl);
             }
             readIdx++;
         }

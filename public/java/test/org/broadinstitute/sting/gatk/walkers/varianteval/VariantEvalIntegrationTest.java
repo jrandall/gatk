@@ -34,7 +34,7 @@ import java.util.Arrays;
 import java.util.List;
 
 public class VariantEvalIntegrationTest extends WalkerTest {
-    private static String variantEvalTestDataRoot = validationDataLocation + "VariantEval/";
+    private static String variantEvalTestDataRoot = privateTestDir + "VariantEval/";
     private static String fundamentalTestVCF = variantEvalTestDataRoot + "FundamentalsTest.annotated.db.subset.snps_and_indels.vcf";
     private static String fundamentalTestSNPsVCF = variantEvalTestDataRoot + "FundamentalsTest.annotated.db.subset.final.vcf";
     private static String fundamentalTestSNPsWithMLEVCF = variantEvalTestDataRoot + "FundamentalsTest.annotated.db.subset.final.withMLE.vcf";
@@ -122,7 +122,7 @@ public class VariantEvalIntegrationTest extends WalkerTest {
                         "-o %s"
                 ),
                 1,
-                Arrays.asList("e62a3bd9914d48e2bb2fb4f5dfc5ebc0")
+                Arrays.asList("40abbc9be663aed8ee1158f832463ca8")
         );
         executeTest("testFundamentalsCountVariantsSNPsandIndelsWithNovelty", spec);
     }
@@ -144,7 +144,7 @@ public class VariantEvalIntegrationTest extends WalkerTest {
                         "-o %s"
                 ),
                 1,
-                Arrays.asList("087a2d9943c53e7f49663667c3305c7e")
+                Arrays.asList("106a0e8753e839c0a2c030eb4b165fa9")
         );
         executeTest("testFundamentalsCountVariantsSNPsandIndelsWithNoveltyAndFilter", spec);
     }
@@ -354,7 +354,7 @@ public class VariantEvalIntegrationTest extends WalkerTest {
     @Test
     public void testCompOverlap() {
         String extraArgs = "-T VariantEval -R " + b37KGReference + " -L " + variantEvalTestDataRoot + "pacbio.hg19.intervals --comp:comphapmap " + comparisonDataLocation + "Validated/HapMap/3.3/genotypes_r27_nr.b37_fwd.vcf --eval " + variantEvalTestDataRoot + "pacbio.ts.recalibrated.vcf -noEV -EV CompOverlap -sn NA12878 -noST -ST Novelty -o %s";
-        WalkerTestSpec spec = new WalkerTestSpec(extraArgs,1,Arrays.asList("59ad39e03678011b5f62492fa83ede04"));
+        WalkerTestSpec spec = new WalkerTestSpec(extraArgs,1,Arrays.asList("d0d9208060e69e157dac3bf01bdd83b0"));
         executeTestParallel("testCompOverlap",spec);
     }
 
@@ -583,6 +583,21 @@ public class VariantEvalIntegrationTest extends WalkerTest {
                 Arrays.asList("7dc2d8983cb7d98b291ca2f60a9151b2")
         );
         executeTest("testStandardIndelEval", spec);
+    }
+
+    @Test
+    public void testBadACValue() {
+        WalkerTestSpec spec = new WalkerTestSpec(
+                buildCommandLine(
+                        "-T VariantEval",
+                        "-R " + b37KGReference,
+                        "-eval " + privateTestDir + "vcfexample.withBadAC.vcf",
+                        "-noST -ST AlleleCount",
+                        "-noEV -EV VariantSummary"
+                ),
+                0,
+                UserException.class);
+        executeTest("testBadACValue", spec);
     }
 
 

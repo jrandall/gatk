@@ -26,7 +26,7 @@ package org.broadinstitute.sting.utils.variantcontext;
 import net.sf.picard.reference.IndexedFastaSequenceFile;
 import org.broadinstitute.sting.BaseTest;
 import org.broadinstitute.sting.utils.GenomeLocParser;
-import org.broadinstitute.sting.utils.codecs.vcf.VCFConstants;
+import org.broadinstitute.sting.utils.Utils;
 import org.broadinstitute.sting.utils.exceptions.UserException;
 import org.broadinstitute.sting.utils.fasta.CachingIndexedFastaSequenceFile;
 import org.testng.Assert;
@@ -39,7 +39,7 @@ import java.io.FileNotFoundException;
 import java.util.*;
 
 public class VariantContextUtilsUnitTest extends BaseTest {
-    Allele Aref, T, C, delRef, Cref, ATC, ATCATC;
+    Allele Aref, T, C, G, Cref, ATC, ATCATC;
     private GenomeLocParser genomeLocParser;
 
     @BeforeSuite
@@ -56,9 +56,9 @@ public class VariantContextUtilsUnitTest extends BaseTest {
         // alleles
         Aref = Allele.create("A", true);
         Cref = Allele.create("C", true);
-        delRef = Allele.create("-", true);
         T = Allele.create("T");
         C = Allele.create("C");
+        G = Allele.create("G");
         ATC = Allele.create("ATC");
         ATCATC = Allele.create("ATCATC");
     }
@@ -99,7 +99,7 @@ public class VariantContextUtilsUnitTest extends BaseTest {
     private VariantContext makeVC(String source, List<Allele> alleles, Collection<Genotype> genotypes, Set<String> filters) {
         int start = 10;
         int stop = start; // alleles.contains(ATC) ? start + 3 : start;
-        return new VariantContextBuilder(source, "1", start, stop, alleles).genotypes(genotypes).filters(filters).referenceBaseForIndel(Cref.getBases()[0]).make();
+        return new VariantContextBuilder(source, "1", start, stop, alleles).genotypes(genotypes).filters(filters).make();
     }
 
     // --------------------------------------------------------------------------------
@@ -156,28 +156,23 @@ public class VariantContextUtilsUnitTest extends BaseTest {
                 Arrays.asList(Aref, C),
                 Arrays.asList(Aref, T, C)); // in order of appearence
 
-        // The following is actually a pathological case - there's no way on a vcf to represent a null allele that's non-variant.
-        // The code converts this (correctly) to a single-base non-variant vc with whatever base was there as a reference.
-        new MergeAllelesTest(Arrays.asList(delRef),
-                Arrays.asList(Cref));
+        new MergeAllelesTest(Arrays.asList(Aref),
+                Arrays.asList(Aref, ATC),
+                Arrays.asList(Aref, ATC));
 
-        new MergeAllelesTest(Arrays.asList(delRef),
-                Arrays.asList(delRef, ATC),
-                Arrays.asList(delRef, ATC));
-
-        new MergeAllelesTest(Arrays.asList(delRef),
-                Arrays.asList(delRef, ATC, ATCATC),
-                Arrays.asList(delRef, ATC, ATCATC));
+        new MergeAllelesTest(Arrays.asList(Aref),
+                Arrays.asList(Aref, ATC, ATCATC),
+                Arrays.asList(Aref, ATC, ATCATC));
 
         // alleles in the order we see them
-        new MergeAllelesTest(Arrays.asList(delRef, ATCATC),
-                Arrays.asList(delRef, ATC, ATCATC),
-                Arrays.asList(delRef, ATCATC, ATC));
+        new MergeAllelesTest(Arrays.asList(Aref, ATCATC),
+                Arrays.asList(Aref, ATC, ATCATC),
+                Arrays.asList(Aref, ATCATC, ATC));
 
         // same
-        new MergeAllelesTest(Arrays.asList(delRef, ATC),
-                Arrays.asList(delRef, ATCATC),
-                Arrays.asList(delRef, ATC, ATCATC));
+        new MergeAllelesTest(Arrays.asList(Aref, ATC),
+                Arrays.asList(Aref, ATCATC),
+                Arrays.asList(Aref, ATC, ATCATC));
 
         return MergeAllelesTest.getTests(MergeAllelesTest.class);
     }
@@ -604,8 +599,8 @@ public class VariantContextUtilsUnitTest extends BaseTest {
 
         private RepeatDetectorTest(boolean isTrueRepeat, String ref, String refAlleleString, String ... altAlleleStrings) {
             super(RepeatDetectorTest.class);
-            this.ref = "N" + ref; // add a dummy base for the event here
             this.isTrueRepeat = isTrueRepeat;
+            this.ref = ref;
 
             List<Allele> alleles = new LinkedList<Allele>();
             final Allele refAllele = Allele.create(refAlleleString, true);
@@ -615,7 +610,7 @@ public class VariantContextUtilsUnitTest extends BaseTest {
                 alleles.add(alt);
             }
 
-            VariantContextBuilder builder = new VariantContextBuilder("test", "chr1", 1, 1 + refAllele.length(), alleles);
+            VariantContextBuilder builder = new VariantContextBuilder("test", "chr1", 1, refAllele.length(), alleles);
             this.vc = builder.make();
         }
 
@@ -626,31 +621,31 @@ public class VariantContextUtilsUnitTest extends BaseTest {
 
     @DataProvider(name = "RepeatDetectorTest")
     public Object[][] makeRepeatDetectorTest() {
-        new RepeatDetectorTest(true,  "AAC", "-", "A");
-        new RepeatDetectorTest(true,  "AAC", "A", "-");
-        new RepeatDetectorTest(false, "AAC", "AA", "-");
-        new RepeatDetectorTest(false, "AAC", "-", "C");
+        new RepeatDetectorTest(true,  "NAAC", "N", "NA");
+        new RepeatDetectorTest(true,  "NAAC", "NA", "N");
+        new RepeatDetectorTest(false, "NAAC", "NAA", "N");
+        new RepeatDetectorTest(false, "NAAC", "N", "NC");
         new RepeatDetectorTest(false, "AAC", "A", "C");
 
         // running out of ref bases => false
-        new RepeatDetectorTest(false, "AAC", "-", "CAGTA");
+        new RepeatDetectorTest(false, "NAAC", "N", "NCAGTA");
 
         // complex repeats
-        new RepeatDetectorTest(true,  "ATATATC", "-", "AT");
-        new RepeatDetectorTest(true,  "ATATATC", "-", "ATA");
-        new RepeatDetectorTest(true,  "ATATATC", "-", "ATAT");
-        new RepeatDetectorTest(true,  "ATATATC", "AT", "-");
-        new RepeatDetectorTest(false, "ATATATC", "ATA", "-");
-        new RepeatDetectorTest(false, "ATATATC", "ATAT", "-");
+        new RepeatDetectorTest(true,  "NATATATC", "N", "NAT");
+        new RepeatDetectorTest(true,  "NATATATC", "N", "NATA");
+        new RepeatDetectorTest(true,  "NATATATC", "N", "NATAT");
+        new RepeatDetectorTest(true,  "NATATATC", "NAT", "N");
+        new RepeatDetectorTest(false, "NATATATC", "NATA", "N");
+        new RepeatDetectorTest(false, "NATATATC", "NATAT", "N");
 
         // multi-allelic
-        new RepeatDetectorTest(true,  "ATATATC", "-", "AT", "ATAT");
-        new RepeatDetectorTest(true,  "ATATATC", "-", "AT", "ATA");
-        new RepeatDetectorTest(true,  "ATATATC", "AT", "-", "ATAT");
-        new RepeatDetectorTest(true,  "ATATATC", "AT", "-", "ATA"); // two As
-        new RepeatDetectorTest(false, "ATATATC", "AT", "-", "ATC"); // false
-        new RepeatDetectorTest(false, "ATATATC", "AT", "-", "CC"); // false
-        new RepeatDetectorTest(false, "ATATATC", "AT", "ATAT", "CC"); // false
+        new RepeatDetectorTest(true,  "NATATATC", "N", "NAT", "NATAT");
+        new RepeatDetectorTest(true,  "NATATATC", "N", "NAT", "NATA");
+        new RepeatDetectorTest(true,  "NATATATC", "NAT", "N", "NATAT");
+        new RepeatDetectorTest(true,  "NATATATC", "NAT", "N", "NATA"); // two As
+        new RepeatDetectorTest(false, "NATATATC", "NAT", "N", "NATC"); // false
+        new RepeatDetectorTest(false, "NATATATC", "NAT", "N", "NCC"); // false
+        new RepeatDetectorTest(false, "NATATATC", "NAT", "NATAT", "NCC"); // false
 
         return RepeatDetectorTest.getTests(RepeatDetectorTest.class);
     }
@@ -660,5 +655,163 @@ public class VariantContextUtilsUnitTest extends BaseTest {
 
          // test alleles are equal
         Assert.assertEquals(VariantContextUtils.isTandemRepeat(cfg.vc, cfg.ref.getBytes()), cfg.isTrueRepeat);
+    }
+
+    // --------------------------------------------------------------------------------
+    //
+    // basic allele clipping test
+    //
+    // --------------------------------------------------------------------------------
+
+    private class ReverseClippingPositionTestProvider extends TestDataProvider {
+        final String ref;
+        final List<Allele> alleles = new ArrayList<Allele>();
+        final int expectedClip;
+
+        private ReverseClippingPositionTestProvider(final int expectedClip, final String ref, final String... alleles) {
+            super(ReverseClippingPositionTestProvider.class);
+            this.ref = ref;
+            for ( final String allele : alleles )
+                this.alleles.add(Allele.create(allele));
+            this.expectedClip = expectedClip;
+        }
+
+        @Override
+        public String toString() {
+            return String.format("ref=%s allele=%s reverse clip %d", ref, alleles, expectedClip);
+        }
+    }
+
+    @DataProvider(name = "ReverseClippingPositionTestProvider")
+    public Object[][] makeReverseClippingPositionTestProvider() {
+        // pair clipping
+        new ReverseClippingPositionTestProvider(0, "ATT", "CCG");
+        new ReverseClippingPositionTestProvider(1, "ATT", "CCT");
+        new ReverseClippingPositionTestProvider(2, "ATT", "CTT");
+        new ReverseClippingPositionTestProvider(2, "ATT", "ATT");  // cannot completely clip allele
+
+        // triplets
+        new ReverseClippingPositionTestProvider(0, "ATT", "CTT", "CGG");
+        new ReverseClippingPositionTestProvider(1, "ATT", "CTT", "CGT"); // the T can go
+        new ReverseClippingPositionTestProvider(2, "ATT", "CTT", "CTT"); // both Ts can go
+
+        return ReverseClippingPositionTestProvider.getTests(ReverseClippingPositionTestProvider.class);
+    }
+
+    @Test(dataProvider = "ReverseClippingPositionTestProvider")
+    public void testReverseClippingPositionTestProvider(ReverseClippingPositionTestProvider cfg) {
+        int result = VariantContextUtils.computeReverseClipping(cfg.alleles, cfg.ref.getBytes(), 0, false);
+        Assert.assertEquals(result, cfg.expectedClip);
+    }
+
+    // --------------------------------------------------------------------------------
+    //
+    // test splitting into bi-allelics
+    //
+    // --------------------------------------------------------------------------------
+
+    @DataProvider(name = "SplitBiallelics")
+    public Object[][] makeSplitBiallelics() throws CloneNotSupportedException {
+        List<Object[]> tests = new ArrayList<Object[]>();
+
+        final VariantContextBuilder root = new VariantContextBuilder("x", "20", 10, 10, Arrays.asList(Aref, C));
+
+        // biallelic -> biallelic
+        tests.add(new Object[]{root.make(), Arrays.asList(root.make())});
+
+        // monos -> monos
+        root.alleles(Arrays.asList(Aref));
+        tests.add(new Object[]{root.make(), Arrays.asList(root.make())});
+
+        root.alleles(Arrays.asList(Aref, C, T));
+        tests.add(new Object[]{root.make(),
+                Arrays.asList(
+                        root.alleles(Arrays.asList(Aref, C)).make(),
+                        root.alleles(Arrays.asList(Aref, T)).make())});
+
+        root.alleles(Arrays.asList(Aref, C, T, G));
+        tests.add(new Object[]{root.make(),
+                Arrays.asList(
+                        root.alleles(Arrays.asList(Aref, C)).make(),
+                        root.alleles(Arrays.asList(Aref, T)).make(),
+                        root.alleles(Arrays.asList(Aref, G)).make())});
+
+        final Allele C      = Allele.create("C");
+        final Allele CA      = Allele.create("CA");
+        final Allele CAA     = Allele.create("CAA");
+        final Allele CAAAA   = Allele.create("CAAAA");
+        final Allele CAAAAA  = Allele.create("CAAAAA");
+        final Allele Cref      = Allele.create("C", true);
+        final Allele CAref     = Allele.create("CA", true);
+        final Allele CAAref    = Allele.create("CAA", true);
+        final Allele CAAAref   = Allele.create("CAAA", true);
+
+        root.alleles(Arrays.asList(Cref, CA, CAA));
+        tests.add(new Object[]{root.make(),
+                Arrays.asList(
+                        root.alleles(Arrays.asList(Cref, CA)).make(),
+                        root.alleles(Arrays.asList(Cref, CAA)).make())});
+
+        root.alleles(Arrays.asList(CAAref, C, CA)).stop(12);
+        tests.add(new Object[]{root.make(),
+                Arrays.asList(
+                        root.alleles(Arrays.asList(CAAref, C)).make(),
+                        root.alleles(Arrays.asList(CAref, C)).stop(11).make())});
+
+        root.alleles(Arrays.asList(CAAAref, C, CA, CAA)).stop(13);
+        tests.add(new Object[]{root.make(),
+                Arrays.asList(
+                        root.alleles(Arrays.asList(CAAAref, C)).make(),
+                        root.alleles(Arrays.asList(CAAref, C)).stop(12).make(),
+                        root.alleles(Arrays.asList(CAref, C)).stop(11).make())});
+
+        root.alleles(Arrays.asList(CAAAref, CAAAAA, CAAAA, CAA, C)).stop(13);
+        tests.add(new Object[]{root.make(),
+                Arrays.asList(
+                        root.alleles(Arrays.asList(Cref, CAA)).stop(10).make(),
+                        root.alleles(Arrays.asList(Cref, CA)).stop(10).make(),
+                        root.alleles(Arrays.asList(CAref, C)).stop(11).make(),
+                        root.alleles(Arrays.asList(CAAAref, C)).stop(13).make())});
+
+        return tests.toArray(new Object[][]{});
+    }
+
+    @Test(dataProvider = "SplitBiallelics")
+    public void testSplitBiallelicsNoGenotypes(final VariantContext vc, final List<VariantContext> expectedBiallelics) {
+        final List<VariantContext> biallelics = VariantContextUtils.splitVariantContextToBiallelics(vc);
+        Assert.assertEquals(biallelics.size(), expectedBiallelics.size());
+        for ( int i = 0; i < biallelics.size(); i++ ) {
+            final VariantContext actual = biallelics.get(i);
+            final VariantContext expected = expectedBiallelics.get(i);
+            VariantContextTestProvider.assertEquals(actual, expected);
+        }
+    }
+
+    @Test(dataProvider = "SplitBiallelics", dependsOnMethods = "testSplitBiallelicsNoGenotypes")
+    public void testSplitBiallelicsGenotypes(final VariantContext vc, final List<VariantContext> expectedBiallelics) {
+        final List<Genotype> genotypes = new ArrayList<Genotype>();
+
+        int sampleI = 0;
+        for ( final List<Allele> alleles : Utils.makePermutations(vc.getAlleles(), 2, true) ) {
+            genotypes.add(GenotypeBuilder.create("sample" + sampleI++, alleles));
+        }
+        genotypes.add(GenotypeBuilder.createMissing("missing", 2));
+
+        final VariantContext vcWithGenotypes = new VariantContextBuilder(vc).genotypes(genotypes).make();
+
+        final List<VariantContext> biallelics = VariantContextUtils.splitVariantContextToBiallelics(vcWithGenotypes);
+        for ( int i = 0; i < biallelics.size(); i++ ) {
+            final VariantContext actual = biallelics.get(i);
+            Assert.assertEquals(actual.getNSamples(), vcWithGenotypes.getNSamples()); // not dropping any samples
+
+            for ( final Genotype inputGenotype : genotypes ) {
+                final Genotype actualGenotype = actual.getGenotype(inputGenotype.getSampleName());
+                Assert.assertNotNull(actualGenotype);
+                if ( ! vc.isVariant() || vc.isBiallelic() )
+                    Assert.assertEquals(actualGenotype, vcWithGenotypes.getGenotype(inputGenotype.getSampleName()));
+                else
+                    Assert.assertTrue(actualGenotype.isNoCall());
+            }
+        }
     }
 }

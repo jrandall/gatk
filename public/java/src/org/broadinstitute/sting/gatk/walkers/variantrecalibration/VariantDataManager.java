@@ -32,6 +32,7 @@ import org.broadinstitute.sting.utils.GenomeLoc;
 import org.broadinstitute.sting.utils.MathUtils;
 import org.broadinstitute.sting.utils.codecs.vcf.VCFConstants;
 import org.broadinstitute.sting.utils.exceptions.ReviewedStingException;
+import org.broadinstitute.sting.utils.help.HelpConstants;
 import org.broadinstitute.sting.utils.variantcontext.writer.VariantContextWriter;
 import org.broadinstitute.sting.utils.collections.ExpandingArrayList;
 import org.broadinstitute.sting.utils.exceptions.UserException;
@@ -80,7 +81,7 @@ public class VariantDataManager {
             final double theSTD = standardDeviation(theMean, iii);
             logger.info( annotationKeys.get(iii) + String.format(": \t mean = %.2f\t standard deviation = %.2f", theMean, theSTD) );
             if( Double.isNaN(theMean) ) {
-                throw new UserException.BadInput("Values for " + annotationKeys.get(iii) + " annotation not detected for ANY training variant in the input callset. VariantAnnotator may be used to add these annotations. See http://www.broadinstitute.org/gsa/wiki/index.php/VariantAnnotator");
+                throw new UserException.BadInput("Values for " + annotationKeys.get(iii) + " annotation not detected for ANY training variant in the input callset. VariantAnnotator may be used to add these annotations. See " + HelpConstants.forumPost("discussion/49/using-variant-annotator"));
             }
 
             foundZeroVarianceAnnotation = foundZeroVarianceAnnotation || (theSTD < 1E-6);
@@ -158,7 +159,7 @@ public class VariantDataManager {
         logger.info( "Found " + numBadSitesAdded + " variants overlapping bad sites training tracks." );
 
         // Next sort the variants by the LOD coming from the positive model and add to the list the bottom X percent of variants
-        Collections.sort( data );
+        Collections.sort( data, new VariantDatum.VariantDatumLODComparator() );
         final int numToAdd = Math.max( minimumNumber - trainingData.size(), Math.round((float)bottomPercentage * data.size()) );
         if( numToAdd > data.size() ) {
             throw new UserException.BadInput( "Error during negative model training. Minimum number of variants to use in training is larger than the whole call set. One can attempt to lower the --minNumBadVariants arugment but this is unsafe." );
@@ -235,7 +236,7 @@ public class VariantDataManager {
         double value;
 
         try {
-            value = Double.parseDouble( (String)vc.getAttribute( annotationKey ) );
+            value = vc.getAttributeAsDouble( annotationKey, Double.NaN );
             if( Double.isInfinite(value) ) { value = Double.NaN; }
             if( jitter && annotationKey.equalsIgnoreCase("HRUN") ) { // Integer valued annotations must be jittered a bit to work in this GMM
                   value += -0.25 + 0.5 * GenomeAnalysisEngine.getRandomGenerator().nextDouble();
@@ -297,7 +298,7 @@ public class VariantDataManager {
             case SNP:
                 return evalVC.isSNP() || evalVC.isMNP();
             case INDEL:
-                return evalVC.isIndel() || evalVC.isMixed() || evalVC.isSymbolic();
+                return evalVC.isStructuralIndel() || evalVC.isIndel() || evalVC.isMixed() || evalVC.isSymbolic();
             case BOTH:
                 return true;
             default:

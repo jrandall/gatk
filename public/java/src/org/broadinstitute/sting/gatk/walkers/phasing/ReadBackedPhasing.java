@@ -95,7 +95,8 @@ import static org.broadinstitute.sting.utils.codecs.vcf.VCFUtils.getVCFHeadersFr
 
 @DocumentedGATKFeature( groupName = "Variant Discovery Tools", extraDocs = {CommandLineGATK.class} )
 public class ReadBackedPhasing extends RodWalker<PhasingStatsAndOutput, PhasingStats> {
-    private static final boolean DEBUG = false;
+    @Argument(fullName="debug", shortName="debug", doc="If specified, print out very verbose debug information (if -l DEBUG is also specified)", required = false)
+    protected boolean DEBUG = false;
     /**
      * The VCF file we are phasing variants from.
      *
@@ -134,6 +135,9 @@ public class ReadBackedPhasing extends RodWalker<PhasingStatsAndOutput, PhasingS
     @Argument(fullName = "permitNoSampleOverlap", shortName = "permitNoSampleOverlap", doc = "Don't exit (just WARN) when the VCF and BAMs do not overlap in samples", required = false)
     private boolean permitNoSampleOverlap = false;
 
+    /**
+     * Important note: do not use this argument if your input data set is not already phased or it will cause the tool to skip over all heterozygous sites.
+     */
     @Argument(fullName = "respectPhaseInInput", shortName = "respectPhaseInInput", doc = "Will only phase genotypes in cases where the resulting output will necessarily be consistent with any existing phase (for example, from trios)", required = false)
     private boolean respectPhaseInInput = false;
 
@@ -288,7 +292,7 @@ public class ReadBackedPhasing extends RodWalker<PhasingStatsAndOutput, PhasingS
     private VariantContext reduceVCToSamples(VariantContext vc, Set<String> samplesToPhase) {
 //        for ( String sample : samplesToPhase )
 //            logger.debug(String.format("  Sample %s has genotype %s, het = %s", sample, vc.getGenotype(sample), vc.getGenotype(sample).isHet() ));
-        VariantContext subvc = vc.subContextFromSamples(samplesToPhase, true);
+        VariantContext subvc = vc.subContextFromSamples(samplesToPhase);
 //        logger.debug("original VC = " + vc);
 //        logger.debug("sub      VC = " + subvc);
         return VariantContextUtils.pruneVariantContext(subvc, KEYS_TO_KEEP_IN_REDUCED_VCF);
@@ -870,7 +874,7 @@ public class ReadBackedPhasing extends RodWalker<PhasingStatsAndOutput, PhasingS
 
             int useOnLeft, useOnRight;
             if (numOnLeft <= numOnRight) {
-                int halfToUse = new Double(Math.floor(numToUse / 2.0)).intValue(); // skimp on the left [floor], and be generous with the right side
+                int halfToUse = numToUse / 2; // skimp on the left [floor], and be generous with the right side
                 useOnLeft = Math.min(halfToUse, numOnLeft);
                 useOnRight = Math.min(numToUse - useOnLeft, numOnRight);
             }
@@ -949,7 +953,7 @@ public class ReadBackedPhasing extends RodWalker<PhasingStatsAndOutput, PhasingS
         }
 
         if (DEBUG) logger.debug("\nPhasing table [AFTER CALCULATION]:\n" + sampleHaps + "\n");
-        MaxHaplotypeAndQuality maxHapQual = new MaxHaplotypeAndQuality(sampleHaps, true);
+        MaxHaplotypeAndQuality maxHapQual = new MaxHaplotypeAndQuality(sampleHaps, DEBUG);
         double posteriorProb = maxHapQual.maxEntry.getScore().getValue();
 
         if (DEBUG)
@@ -971,7 +975,7 @@ public class ReadBackedPhasing extends RodWalker<PhasingStatsAndOutput, PhasingS
         public MaxHaplotypeAndQuality(PhasingTable hapTable, boolean printDebug) {
             // Marginalize each haplotype to its first 2 positions:
             hapTable = HaplotypeTableCreator.marginalizeAsNewTable(hapTable);
-            if (DEBUG && printDebug)
+            if (printDebug)
                 logger.debug("\nPhasing table [AFTER MAPPING]:\n" + hapTable + "\n");
 
             calculateMaxHapAndPhasingQuality(hapTable, printDebug);
@@ -981,7 +985,7 @@ public class ReadBackedPhasing extends RodWalker<PhasingStatsAndOutput, PhasingS
 
         private void calculateMaxHapAndPhasingQuality(PhasingTable hapTable, boolean printDebug) {
             hapTable.normalizeScores();
-            if (DEBUG && printDebug)
+            if (printDebug)
                 logger.debug("\nPhasing table [AFTER NORMALIZATION]:\n" + hapTable + "\n");
 
             // Determine the phase at this position:

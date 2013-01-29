@@ -1,10 +1,11 @@
 package org.broadinstitute.sting.utils.activeregion;
 
-import net.sf.picard.reference.IndexedFastaSequenceFile;
+import com.google.java.contract.Requires;
 import org.broadinstitute.sting.utils.GenomeLoc;
 import org.broadinstitute.sting.utils.GenomeLocParser;
 import org.broadinstitute.sting.utils.HasGenomeLocation;
 import org.broadinstitute.sting.utils.clipping.ReadClipper;
+import org.broadinstitute.sting.utils.fasta.CachingIndexedFastaSequenceFile;
 import org.broadinstitute.sting.utils.sam.GATKSAMRecord;
 
 import java.util.ArrayList;
@@ -15,7 +16,7 @@ import java.util.ArrayList;
  * Date: 1/4/12
  */
 
-public class ActiveRegion implements HasGenomeLocation, Comparable<ActiveRegion> {
+public class ActiveRegion implements HasGenomeLocation {
 
     private final ArrayList<GATKSAMRecord> reads = new ArrayList<GATKSAMRecord>();
     private final GenomeLoc activeRegionLoc;
@@ -53,29 +54,32 @@ public class ActiveRegion implements HasGenomeLocation, Comparable<ActiveRegion>
 
     public ArrayList<GATKSAMRecord> getReads() { return reads; }
 
-    public byte[] getActiveRegionReference( final IndexedFastaSequenceFile referenceReader ) {
+    @Requires("referenceReader.isUppercasingBases()")
+    public byte[] getActiveRegionReference( final CachingIndexedFastaSequenceFile referenceReader ) {
         return getActiveRegionReference(referenceReader, 0);
     }
 
-    public byte[] getActiveRegionReference( final IndexedFastaSequenceFile referenceReader, final int padding ) {
-        return referenceReader.getSubsequenceAt( extendedLoc.getContig(),
-                Math.max(1, extendedLoc.getStart() - padding),
-                Math.min(referenceReader.getSequenceDictionary().getSequence(extendedLoc.getContig()).getSequenceLength(), extendedLoc.getStop() + padding) ).getBases();
+    @Requires("referenceReader.isUppercasingBases()")
+    public byte[] getActiveRegionReference( final CachingIndexedFastaSequenceFile referenceReader, final int padding ) {
+        return getReference( referenceReader, padding, extendedLoc );
     }
 
-    public byte[] getFullReference( final IndexedFastaSequenceFile referenceReader ) {
+    @Requires("referenceReader.isUppercasingBases()")
+    public byte[] getFullReference( final CachingIndexedFastaSequenceFile referenceReader ) {
         return getFullReference(referenceReader, 0);
     }
 
-    public byte[] getFullReference( final IndexedFastaSequenceFile referenceReader, final int padding ) {
-       return referenceReader.getSubsequenceAt( fullExtentReferenceLoc.getContig(),
-               Math.max(1, fullExtentReferenceLoc.getStart() - padding), 
-               Math.min(referenceReader.getSequenceDictionary().getSequence(fullExtentReferenceLoc.getContig()).getSequenceLength(), fullExtentReferenceLoc.getStop() + padding) ).getBases();
+    @Requires("referenceReader.isUppercasingBases()")
+    public byte[] getFullReference( final CachingIndexedFastaSequenceFile referenceReader, final int padding ) {
+        return getReference( referenceReader, padding, fullExtentReferenceLoc );
     }
 
-    @Override
-    public int compareTo( final ActiveRegion other ) {
-        return this.getLocation().compareTo(other.getLocation());
+    @Requires("referenceReader.isUppercasingBases()")
+    private byte[] getReference( final CachingIndexedFastaSequenceFile referenceReader, final int padding, final GenomeLoc genomeLoc ) {
+        final byte[] reference =  referenceReader.getSubsequenceAt( genomeLoc.getContig(),
+                Math.max(1, genomeLoc.getStart() - padding),
+                Math.min(referenceReader.getSequenceDictionary().getSequence(genomeLoc.getContig()).getSequenceLength(), genomeLoc.getStop() + padding) ).getBases();
+        return reference;
     }
 
     @Override
@@ -90,11 +94,26 @@ public class ActiveRegion implements HasGenomeLocation, Comparable<ActiveRegion>
     public void removeAll( final ArrayList<GATKSAMRecord> readsToRemove ) { reads.removeAll( readsToRemove ); }
 
     public boolean equalExceptReads(final ActiveRegion other) {
-        if ( ! activeRegionLoc.equals(other.activeRegionLoc) ) return false;
+        if ( activeRegionLoc.compareTo(other.activeRegionLoc) != 0 ) return false;
         if ( isActive != other.isActive ) return false;
         if ( genomeLocParser != other.genomeLocParser ) return false;
         if ( extension != other.extension ) return false;
-        if ( ! extendedLoc.equals(other.extendedLoc) ) return false;
+        if ( extendedLoc.compareTo(other.extendedLoc) != 0 ) return false;
         return true;
     }
+
+    /**
+     * A comparator class which is used to sort ActiveRegions by their start location
+     */
+    /*
+    public static class ActiveRegionStartLocationComparator implements Comparator<ActiveRegion> {
+
+        public ActiveRegionStartLocationComparator() {}
+
+        @Override
+        public int compare(final ActiveRegion left, final ActiveRegion right) {
+            return left.getLocation().compareTo(right.getLocation());
+        }
+    }
+    */
 }

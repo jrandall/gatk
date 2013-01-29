@@ -4,6 +4,7 @@ import net.sf.picard.util.PeekableIterator;
 import org.broadinstitute.sting.gatk.ReadProperties;
 import org.broadinstitute.sting.gatk.contexts.AlignmentContext;
 import org.broadinstitute.sting.gatk.datasources.reads.Shard;
+import org.broadinstitute.sting.gatk.iterators.LegacyLocusIteratorByState;
 import org.broadinstitute.sting.gatk.iterators.LocusIterator;
 import org.broadinstitute.sting.gatk.iterators.LocusIteratorByState;
 import org.broadinstitute.sting.gatk.iterators.StingSAMIterator;
@@ -81,12 +82,19 @@ public class WindowMaker implements Iterable<WindowMaker.WindowMakerIterator>, I
     public WindowMaker(Shard shard, GenomeLocParser genomeLocParser, StingSAMIterator iterator, List<GenomeLoc> intervals, Collection<String> sampleNames) {
         this.sourceInfo = shard.getReadProperties();
         this.readIterator = iterator;
-        this.sourceIterator = new PeekableIterator<AlignmentContext>(new LocusIteratorByState(iterator,sourceInfo,genomeLocParser, sampleNames));
+
+        // Use the legacy version of LocusIteratorByState if legacy downsampling was requested:
+        this.sourceIterator = sourceInfo.getDownsamplingMethod().useLegacyDownsampler ?
+                              new PeekableIterator<AlignmentContext>(new LegacyLocusIteratorByState(iterator,sourceInfo,genomeLocParser,sampleNames))
+                              :
+                              new PeekableIterator<AlignmentContext>(new LocusIteratorByState(iterator,sourceInfo,genomeLocParser,sampleNames));
+
+
         this.intervalIterator = intervals.size()>0 ? new PeekableIterator<GenomeLoc>(intervals.iterator()) : null;
     }
 
     public WindowMaker(Shard shard, GenomeLocParser genomeLocParser, StingSAMIterator iterator, List<GenomeLoc> intervals ) {
-        this(shard, genomeLocParser, iterator, intervals, LocusIteratorByState.sampleListForSAMWithoutReadGroups());
+        this(shard, genomeLocParser, iterator, intervals, LegacyLocusIteratorByState.sampleListForSAMWithoutReadGroups());
     }
 
     public Iterator<WindowMakerIterator> iterator() {

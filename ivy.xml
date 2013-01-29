@@ -24,11 +24,8 @@
 
 <ivy-module version="1.0">
     <info organisation="org.broadinstitute" module="Sting"/>
-    <configurations defaultconfmapping="test->default">
+    <configurations>
         <conf name="default" description="the core dependencies for the GATK"/>
-        <conf name="test" extends="default" description="external dependencies used for testing and metrics"/>
-        <conf name="scala" extends="default" description="the dependencies for scala"/>
-        <conf name="queue" extends="scala" description="the dependencies for Queue"/>
     </configurations>
     <dependencies defaultconf="default">
         <dependency org="net.sf" name="sam" rev="latest.integration"/>
@@ -46,13 +43,14 @@
         <dependency org="org.apache.bcel" name="bcel" rev="5.2"/>
 
         <!-- Dependencies for reflections mvn repository -->
-        <dependency org="org.reflections" name="reflections" rev="0.9.5-RC2"/>
+        <dependency org="org.reflections" name="reflections" rev="0.9.8"/>
+        <dependency org="org.slf4j" name="slf4j-log4j12" rev="1.6.1"/>
 
         <!-- Matrix package from math.nist.gov -->
         <dependency org="gov.nist" name="Jama" rev="1.0.2"/>
 
         <!-- Dependencies for the graph aligner -->
-        <dependency org="org.jgrapht" name="jgrapht-jdk1.5" rev="0.7.3"/>
+        <dependency org="net.sf.jgrapht" name="jgrapht" rev="0.8.3"/>
 
         <!-- Dependencies for the html walker documention -->
         <dependency org="org.freemarker" name="freemarker" rev="2.3.18"/>
@@ -78,16 +76,16 @@
         <dependency org="net.sf.gridscheduler" name="drmaa" rev="latest.integration"/>
 
         <!-- Scala dependancies -->
-        <dependency org="org.scala-lang" name="scala-compiler" rev="2.8.1"/>
-        <dependency org="org.scala-lang" name="scala-library" rev="2.8.1"/>
+        <dependency org="org.scala-lang" name="scala-compiler" rev="2.9.2"/>
+        <dependency org="org.scala-lang" name="scala-library" rev="2.9.2"/>
 
         <!-- testing and evaluation dependencies -->
-        <dependency org="org.testng" name="testng" rev="5.14.1" conf="test"/>
-        <dependency org="org.uncommons" name="reportng" rev="1.1.2" conf="test"/>
-        <dependency org="com.google.code.caliper" name="caliper" rev="1.0-SNAPSHOT" conf="test"/>
+        <dependency org="org.testng" name="testng" rev="5.14.1"/>
+        <dependency org="org.uncommons" name="reportng" rev="1.1.2"/>
+        <dependency org="com.google.code.caliper" name="caliper" rev="1.0-SNAPSHOT"/>
 
         <!-- Contracts for Java and dependencies -->
-        <dependency org="com.google.code.cofoja" name="cofoja" rev="1.0-20110609"/>
+        <dependency org="com.google.code.cofoja" name="cofoja" rev="1.0-r139"/>
         <dependency org="asm" name="asm-all" rev="3.3.1"/>
 
         <!-- POI, for reading pipeline files -->

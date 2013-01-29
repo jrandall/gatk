@@ -32,6 +32,7 @@ import org.broadinstitute.sting.gatk.walkers.Walker;
 import org.broadinstitute.sting.utils.Utils;
 import org.broadinstitute.sting.utils.exceptions.ReviewedStingException;
 import org.broadinstitute.sting.utils.exceptions.UserException;
+import org.broadinstitute.sting.utils.threading.ThreadEfficiencyMonitor;
 import org.jets3t.service.S3Service;
 import org.jets3t.service.S3ServiceException;
 import org.jets3t.service.impl.rest.httpclient.RestS3Service;
@@ -86,13 +87,14 @@ public class GATKRunReport {
     private static File REPORT_SENTINEL = new File(REPORT_DIR.getAbsolutePath() + "/ENABLE");
 
     // number of milliseconds before the S3 put operation is timed-out:
-    private static final long S3PutTimeOut = 30 * 1000;
+    private static final long S3PutTimeOut = 10 * 1000;
 
+    public static final String PHONE_HOME_DOCS_URL = "http://gatkforums.broadinstitute.org/discussion/1250/what-is-phone-home-and-how-does-it-affect-me#latest";
 
     /**
      * our log
      */
-    protected static Logger logger = Logger.getLogger(GATKRunReport.class);
+    protected static final Logger logger = Logger.getLogger(GATKRunReport.class);
 
 
     @Element(required = false, name = "id")
@@ -136,6 +138,24 @@ public class GATKRunReport {
 
     @Element(required = true, name = "iterations")
     private long nIterations;
+
+    @Element(required = true, name = "tag")
+    private String tag;
+
+    // -----------------------------------------------------------------
+    // elements related to multi-threading and efficiency
+    // -----------------------------------------------------------------
+
+    @Element(required = true, name = "numThreads")
+    private int numThreads;
+    @Element(required = true, name = "percent_time_running")
+    private String percentTimeRunning;
+    @Element(required = true, name = "percent_time_waiting")
+    private String percentTimeWaiting;
+    @Element(required = true, name = "percent_time_blocking")
+    private String percentTimeBlocking;
+    @Element(required = true, name = "percent_time_waiting_for_io")
+    private String percentTimeWaitingForIO;
 
     public enum PhoneHomeOption {
         /** Disable phone home */
@@ -185,6 +205,8 @@ public class GATKRunReport {
             nIterations = engine.getCumulativeMetrics().getNumIterations();
         }
 
+        tag = engine.getArguments().tag;
+
         // user and hostname -- information about the runner of the GATK
         userName = System.getProperty("user.name");
         hostName = Utils.resolveHostname();
@@ -195,10 +217,28 @@ public class GATKRunReport {
 
         // if there was an exception, capture it
         this.mException = e == null ? null : new ExceptionToXML(e);
+
+        numThreads = engine.getTotalNumberOfThreads();
+        percentTimeRunning = getThreadEfficiencyPercent(engine, ThreadEfficiencyMonitor.State.USER_CPU);
+        percentTimeBlocking = getThreadEfficiencyPercent(engine, ThreadEfficiencyMonitor.State.BLOCKING);
+        percentTimeWaiting = getThreadEfficiencyPercent(engine, ThreadEfficiencyMonitor.State.WAITING);
+        percentTimeWaitingForIO = getThreadEfficiencyPercent(engine, ThreadEfficiencyMonitor.State.WAITING_FOR_IO);
     }
 
     public String getID() {
         return id;
+    }
+
+    /**
+     * Return a string representing the percent of time the GATK spent in state, if possible.  Otherwise return NA
+     *
+     * @param engine the GATK engine whose threading efficiency info we will use
+     * @param state the state whose occupancy we wish to know
+     * @return a string representation of the percent occupancy of state, or NA is not possible
+     */
+    private String getThreadEfficiencyPercent(final GenomeAnalysisEngine engine, final ThreadEfficiencyMonitor.State state) {
+        final ThreadEfficiencyMonitor tem = engine.getThreadEfficiencyMonitor();
+        return tem == null ? "NA" : String.format("%.2f", tem.getStatePercent(state));
     }
 
 

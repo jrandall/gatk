@@ -35,7 +35,7 @@ import org.broadinstitute.sting.queue.engine.{RunnerStatus, CommandLineJobRunner
 import java.util.regex.Pattern
 import java.lang.StringBuffer
 import java.util.Date
-import com.sun.jna.{Structure, StringArray, NativeLong}
+import com.sun.jna.{Pointer, Structure, StringArray, NativeLong}
 import com.sun.jna.ptr.IntByReference
 
 /**
@@ -151,8 +151,11 @@ class Lsf706JobRunner(val function: CommandLineFunction) extends CommandLineJobR
           throw new QException("setOption_() returned -1 while setting esub");
       }
 
-      // LSF specific: get the max runtime for the jobQueue and pass it for this job
-      request.rLimits(LibLsf.LSF_RLIMIT_RUN) = Lsf706JobRunner.getRlimitRun(function.jobQueue)
+      if(!function.wallTime.isEmpty)
+        request.rLimits(LibLsf.LSF_RLIMIT_RUN) = function.wallTime.get.toInt
+      else
+        // LSF specific: get the max runtime for the jobQueue and pass it for this job
+        request.rLimits(LibLsf.LSF_RLIMIT_RUN) = Lsf706JobRunner.getRlimitRun(function.jobQueue)
 
       // Run the command as sh <jobScript>
       request.command = "sh " + jobScript
@@ -295,9 +298,17 @@ object Lsf706JobRunner extends Logging {
       // the platform LSF startTimes are in seconds, not milliseconds, so convert to the java convention
       runner.getRunInfo.startTime = new Date(jobInfo.startTime.longValue * 1000)
       runner.getRunInfo.doneTime = new Date(jobInfo.endTime.longValue * 1000)
-      val exHostsRaw = jobInfo.exHosts.getStringArray(0)
-      //logger.warn("exHostsRaw = " + exHostsRaw)
-      val exHostsList = exHostsRaw.toSeq
+
+      val exHostsList =
+        if (jobInfo.numExHosts != 1) {
+          // this is necessary because
+          val exHostsString = "multipleHosts_" + jobInfo.numExHosts
+          logger.debug("numExHosts = " + jobInfo.numExHosts + " != 1 for job " + runner.jobId + ", cannot safely get exhosts, setting to " + exHostsString)
+          List(exHostsString)
+        } else {
+          jobInfo.exHosts.getStringArray(0).toSeq
+        }
+
       //logger.warn("exHostsList = " + exHostsList)
       val exHosts = exHostsList.reduceLeft(_ + "," + _)
       //logger.warn("exHosts = " + exHosts)

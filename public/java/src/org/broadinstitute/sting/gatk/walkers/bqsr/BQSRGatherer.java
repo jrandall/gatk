@@ -28,6 +28,8 @@ package org.broadinstitute.sting.gatk.walkers.bqsr;
 import org.broadinstitute.sting.commandline.Gatherer;
 import org.broadinstitute.sting.utils.exceptions.ReviewedStingException;
 import org.broadinstitute.sting.utils.exceptions.UserException;
+import org.broadinstitute.sting.utils.recalibration.RecalUtils;
+import org.broadinstitute.sting.utils.recalibration.RecalibrationReport;
 
 import java.io.File;
 import java.io.FileNotFoundException;
@@ -47,7 +49,6 @@ public class BQSRGatherer extends Gatherer  {
 
     @Override
     public void gather(List<File> inputs, File output) {
-        RecalibrationReport generalReport = null;
         final PrintStream outputFile;
         try {
             outputFile = new PrintStream(output);
@@ -55,6 +56,7 @@ public class BQSRGatherer extends Gatherer  {
             throw new UserException.MissingArgument("output", MISSING_OUTPUT_FILE);
         }
 
+        RecalibrationReport generalReport = null;
         for (File input : inputs) {
             final RecalibrationReport inputReport = new RecalibrationReport(input);
             if (generalReport == null)
@@ -68,14 +70,15 @@ public class BQSRGatherer extends Gatherer  {
         generalReport.calculateQuantizedQualities();
 
         RecalibrationArgumentCollection RAC = generalReport.getRAC();
-        if (RAC.recalibrationReport != null && !RAC.NO_PLOTS) {
-            final File recal_out = new File(output.getName() + ".original");
-            final RecalibrationReport originalReport = new RecalibrationReport(RAC.recalibrationReport);
-            RecalDataManager.generateRecalibrationPlot(recal_out, originalReport.getRecalibrationTables(), generalReport.getRecalibrationTables(), generalReport.getCovariates(), RAC.KEEP_INTERMEDIATE_FILES);
-        }
-        else if (!RAC.NO_PLOTS) {
-            final File recal_out = new File(output.getName() + ".recal");
-            RecalDataManager.generateRecalibrationPlot(recal_out, generalReport.getRecalibrationTables(), generalReport.getCovariates(), RAC.KEEP_INTERMEDIATE_FILES);
+        if ( RAC.RECAL_PDF_FILE != null ) {
+            RAC.RECAL_TABLE_FILE = output;
+            if ( RAC.existingRecalibrationReport != null ) {
+                final RecalibrationReport originalReport = new RecalibrationReport(RAC.existingRecalibrationReport);
+                RecalUtils.generateRecalibrationPlot(RAC, originalReport.getRecalibrationTables(), generalReport.getRecalibrationTables(), generalReport.getCovariates());
+            }
+            else {
+                RecalUtils.generateRecalibrationPlot(RAC, generalReport.getRecalibrationTables(), generalReport.getCovariates());
+            }
         }
 
         generalReport.output(outputFile);
